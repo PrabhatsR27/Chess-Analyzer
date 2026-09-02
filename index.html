@@ -70,14 +70,15 @@
   </header>
 
   <!-- Profile & Games Tab -->
+    <!-- Profile & Games Tab -->
   <div id="profile" class="tab-content active">
     <div class="form-group">
       <label>Database URL</label>
-      <input type="text" id="db-url" placeholder="https://your-db.firebaseio.com" />
+      <input type="text" id="db-url" value="https://chess-analyzer-36eb6-default-rtdb.firebaseio.com" />
     </div>
     <div class="form-group">
       <label>Chess Username</label>
-      <input type="text" id="username" placeholder="e.g. forgotten_gambit" />
+      <input type="text" id="username" value="forgotten_gambit" />
     </div>
     <button class="btn-primary" id="load-btn">Connect & Fetch Data</button>
 
@@ -94,6 +95,7 @@
 
     <div class="game-list" id="game-list"></div>
   </div>
+
 
   <!-- Analysis Board Tab -->
   <div id="analysis" class="tab-content">
