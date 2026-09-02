@@ -1,137 +1,368 @@
-import os
-import json
-import chess
-import chess.pgn
-import chess.engine
-import requests
+
+        
+#!/usr/bin/env python3
+"""
+analyzer.py
+-----------
+Runs unattended in GitHub Actions (see .github/workflows/sync.yml), every
+3 hours: pulls your newest chess.com games, analyzes them with Stockfish 18,
+classifies every move, and writes the result straight to Firebase using the
+firebase-admin SDK and the service-account secret already configured in the
+repo. Nothing to run by hand.
+
+Firebase schema written (matches what the Endgame app reads):
+
+users/{username}/games/{game_id} = {
+    white, black, white_accuracy, black_accuracy, result, date,
+    moves: [
+        { played, fen_before, eval_cp, classification, best_move, time_taken }
+    ]
+}
+
+Required repo secrets (already set up per your message):
+    FIREBASE_SERVICE_ACCOUNT   full service-account JSON, as a single secret
+    FIREBASE_DB_URL            e.g. https://your-project-default-rtdb.firebaseio.com
+    CHESSCOM_USERNAME          your chess.com username
+
+Optional repo secrets / vars:
+    STOCKFISH_PATH             defaults to "stockfish" (resolved on PATH by the workflow)
+    ANALYSIS_DEPTH             defaults to 14
+    SYNC_MONTHS                how many months of chess.com history to scan each run (default 1)
+    MAX_GAMES_PER_RUN          cap so a single run can't blow past the Actions time limit (default 20)
+"""
+
 import io
-import firebase_admin
-from firebase_admin import credentials, db
+import json
+import math
+import os
+import re
+import sys
 from datetime import datetime
 
-USERNAME = os.getenv("CHESS_COM_USERNAME", "forgotten_gambit")
-FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL", "https://chess-analyzer-36eb6-default-rtdb.firebaseio.com")
-SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+import chess
+import chess.engine
+import chess.pgn
+import requests
+import firebase_admin
+from firebase_admin import credentials, db
 
-if SERVICE_ACCOUNT_JSON and not firebase_admin._apps:
-    cred_dict = json.loads(SERVICE_ACCOUNT_JSON)
+# ============================================================
+# CONFIG — pulled from environment / repo secrets
+# ============================================================
+USERNAME = os.environ.get("CHESSCOM_USERNAME")
+FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL")
+FIREBASE_SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "stockfish")
+ANALYSIS_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "14"))
+SYNC_MONTHS = int(os.environ.get("SYNC_MONTHS", "1"))
+MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
+MATE_SCORE_CP = 10000  # how mate scores are encoded for the app's eval bar
+
+# Classification thresholds, in centipawn loss (how much worse the played
+# move was than the engine's best move, from the mover's perspective).
+THRESH_GOOD = 50
+THRESH_INACCURACY = 100
+THRESH_MISTAKE = 300
+GREAT_GAP = 150       # 2nd best move must be at least this much worse, in a sharp spot
+BOOK_PLIES = 10        # first N half-moves are eligible to be tagged "Book"
+BOOK_MAX_LOSS = 20
+
+
+# ============================================================
+# FIREBASE
+# ============================================================
+def init_firebase():
+    if not FIREBASE_SERVICE_ACCOUNT:
+        sys.exit("Missing FIREBASE_SERVICE_ACCOUNT secret.")
+    if not FIREBASE_DB_URL:
+        sys.exit("Missing FIREBASE_DB_URL secret.")
+    cred_dict = json.loads(FIREBASE_SERVICE_ACCOUNT)
     cred = credentials.Certificate(cred_dict)
-    firebase_admin.initialize_app(cred, {
-        'databaseURL': FIREBASE_DB_URL
-    })
+    firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
 
-def fetch_chess_com_games(username):
-    url = f"https://api.chess.com/pub/player/{username.lower()}/games/archives"
-    headers = {"User-Agent": "ChessAnalyzerBot/1.0"}
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        return []
-    archives = response.json().get("archives", [])
-    if not archives:
-        return []
-    latest_archive = archives[-1]
-    games_res = requests.get(latest_archive, headers=headers)
-    if games_res.status_code != 200:
-        return []
-    return games_res.json().get("games", [])[-3:] # Process last 3 games
 
-def classify_move(cp_loss):
-    if cp_loss <= 5: return "Best"
-    elif cp_loss <= 15: return "Good"
-    elif cp_loss <= 50: return "Inaccuracy"
-    elif cp_loss <= 150: return "Mistake"
-    else: return "Blunder"
+def existing_game_ids(username):
+    ref = db.reference(f"users/{username}/games")
+    data = ref.get(shallow=True)
+    return set(data.keys()) if data else set()
 
-def analyze_game_pgn(pgn_text, player_username):
-    pgn = chess.pgn.read_game(io.StringIO(pgn_text))
-    if not pgn:
+
+def upload_game(username, game_id, game_obj):
+    db.reference(f"users/{username}/games/{game_id}").set(game_obj)
+
+
+# ============================================================
+# ENGINE HELPERS
+# ============================================================
+def score_to_cp(score: "chess.engine.PovScore", pov_color: bool) -> int:
+    """Convert a PovScore to a centipawn int from the given color's perspective.
+    Mate scores are encoded as +/-(MATE_SCORE_CP - moves_to_mate) so the app's
+    eval bar can still detect and display them."""
+    s = score.pov(pov_color)
+    if s.is_mate():
+        mate_in = s.mate()
+        sign = 1 if mate_in > 0 else -1
+        return sign * (MATE_SCORE_CP - abs(mate_in))
+    return s.score()
+
+
+def analyze_position(engine, board, depth, multipv=2):
+    """Return engine lines (best first): [{'move', 'san', 'cp'}], cp from side-to-move's perspective."""
+    info = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=multipv)
+    if isinstance(info, dict):
+        info = [info]
+    lines = []
+    for entry in info:
+        pv = entry.get("pv")
+        if not pv:
+            continue
+        move = pv[0]
+        cp = score_to_cp(entry["score"], board.turn)
+        lines.append({"move": move, "san": board.san(move), "cp": cp})
+    return lines
+
+
+# ============================================================
+# MOVE CLASSIFICATION
+# ============================================================
+def classify_move(played_cp, best_cp, ply_index, is_best, had_only_good_move,
+                   sacrifice, prior_eval_for_mover):
+    loss = max(0, best_cp - played_cp)
+
+    if ply_index < BOOK_PLIES and loss <= BOOK_MAX_LOSS:
+        return "Book"
+
+    if is_best:
+        if sacrifice and played_cp > -50:
+            return "Brilliant"
+        if had_only_good_move:
+            return "Great"
+        return "Best"
+
+    if loss <= THRESH_GOOD:
+        return "Good"
+    if loss <= THRESH_INACCURACY:
+        return "Inaccuracy"
+    if loss <= THRESH_MISTAKE:
+        return "Mistake"
+
+    # Was the position already winning big before this move? Then this is a
+    # missed win rather than a blunder from a level position.
+    if prior_eval_for_mover >= 200:
+        return "Miss"
+    return "Blunder"
+
+
+def detect_sacrifice(board_before, move):
+    """Rough material-sacrifice heuristic: the moved piece ends up on a square
+    where it's attacked more than it's defended, for real material value."""
+    piece_values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+    captured = board_before.piece_at(move.to_square)
+    moving_piece = board_before.piece_at(move.from_square)
+    if moving_piece is None:
+        return False
+    gain = piece_values.get(captured.piece_type, 0) if captured else 0
+    moving_value = piece_values.get(moving_piece.piece_type, 0)
+    board_after = board_before.copy()
+    board_after.push(move)
+    attackers = board_after.attackers(not board_before.turn, move.to_square)
+    defenders = board_after.attackers(board_before.turn, move.to_square)
+    return bool(attackers) and len(attackers) > len(defenders) and (moving_value - gain) >= 2
+
+
+# ============================================================
+# ACCURACY (lichess-style win% based formula)
+# ============================================================
+def cp_to_winpct(cp):
+    cp = max(-1000, min(1000, cp))
+    return 50 + 50 * (2 / (1 + math.exp(-0.00368208 * cp)) - 1)
+
+
+def move_accuracy_pct(winpct_before, winpct_after):
+    diff = max(0.0, winpct_before - winpct_after)
+    acc = 103.1668 * math.exp(-0.04354 * diff) - 3.1668
+    return max(0.0, min(100.0, acc))
+
+
+# ============================================================
+# CLOCK / TIME PARSING
+# ============================================================
+CLK_RE = re.compile(r"\[%clk\s+(\d+):(\d{2}):(\d{2}(?:\.\d+)?)\]")
+
+
+def parse_clock(comment):
+    if not comment:
         return None
+    m = CLK_RE.search(comment)
+    if not m:
+        return None
+    h, mnt, s = m.groups()
+    return int(h) * 3600 + int(mnt) * 60 + float(s)
 
-    # Change this line inside analyze_game_pgn():
-engine = chess.engine.SimpleEngine.popen_uci("stockfish")
 
-    engine.configure({"Threads": 2, "Hash": 128})
+# ============================================================
+# GAME ANALYSIS
+# ============================================================
+def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
+    board = pgn_game.board()
+    moves_out = []
+    prev_clock = {chess.WHITE: None, chess.BLACK: None}
+    winpct_acc = {chess.WHITE: [], chess.BLACK: []}
 
-    board = pgn.board()
-    analyzed_moves = []
-    
-    white_name = pgn.headers.get("White", "White")
-    black_name = pgn.headers.get("Black", "Black")
-    is_target_white = player_username.lower() in white_name.lower()
+    node = pgn_game
+    ply = 0
+    prior_mover_cp = 0
 
-    white_centipawn_loss_total = 0
-    black_centipawn_loss_total = 0
-    white_move_count = 0
-    black_move_count = 0
-
-    for node in pgn.mainline():
-        move = node.move
+    while node.variations:
+        next_node = node.variations[0]
+        move = next_node.move
+        mover_color = board.turn
         fen_before = board.fen()
-        is_white_turn = board.turn == chess.WHITE
+        san_played = board.san(move)
 
-        info_before = engine.analyse(board, chess.engine.Limit(depth=12))
-        score_before = info_before["score"].relative.score(mate_score=10000)
-        score_cp = score_before if score_before is not None else 0
+        lines = analyze_position(engine, board, depth, multipv=2)
+        best_line = lines[0] if lines else {"move": move, "san": san_played, "cp": 0}
+        second_cp = lines[1]["cp"] if len(lines) > 1 else best_line["cp"]
+        is_best = (move == best_line["move"])
+        sac = detect_sacrifice(board, move)
 
         board.push(move)
+        after_score = engine.analyse(board, chess.engine.Limit(depth=depth))["score"]
+        played_cp_mover = score_to_cp(after_score, mover_color)
+        best_cp_mover = best_line["cp"]
+        had_only_good_move = (best_line["cp"] - second_cp) >= GREAT_GAP
 
-        info_after = engine.analyse(board, chess.engine.Limit(depth=12))
-        score_after = info_after["score"].relative.score(mate_score=10000)
+        classification = classify_move(
+            played_cp=played_cp_mover,
+            best_cp=best_cp_mover,
+            ply_index=ply,
+            is_best=is_best,
+            had_only_good_move=had_only_good_move,
+            sacrifice=sac,
+            prior_eval_for_mover=prior_mover_cp,
+        )
 
-        cp_loss = 0
-        if score_before is not None and score_after is not None:
-            # Flip relative score perspective for accurate loss tracking
-            cp_loss = max(0, abs(score_before) - abs(score_after))
+        # eval_cp stored from WHITE's perspective for a consistent eval bar
+        eval_cp_white = played_cp_mover if mover_color == chess.WHITE else -played_cp_mover
 
-        if is_white_turn:
-            white_centipawn_loss_total += cp_loss
-            white_move_count += 1
-        else:
-            black_centipawn_loss_total += cp_loss
-            black_move_count += 1
+        clk = parse_clock(next_node.comment)
+        time_taken = None
+        if clk is not None and prev_clock[mover_color] is not None:
+            time_taken = round(max(0, prev_clock[mover_color] - clk), 1)
+        if clk is not None:
+            prev_clock[mover_color] = clk
 
-        classification = classify_move(cp_loss)
+        wp_before = cp_to_winpct(prior_mover_cp)
+        wp_after = cp_to_winpct(played_cp_mover)
+        winpct_acc[mover_color].append(move_accuracy_pct(wp_before, wp_after))
 
-        analyzed_moves.append({
+        entry = {
+            "played": san_played,
             "fen_before": fen_before,
-            "played": move.uci(),
-            "best_move": info_before.get("pv", [move])[0].uci(),
+            "eval_cp": eval_cp_white,
             "classification": classification,
-            "eval_cp": score_cp,
-            "cp_loss": cp_loss
-        })
+            "best_move": best_line["san"],
+        }
+        if time_taken is not None:
+            entry["time_taken"] = time_taken
+        moves_out.append(entry)
 
-    engine.quit()
+        prior_mover_cp = played_cp_mover
+        node = next_node
+        ply += 1
 
-    # Calculate actual dynamic accuracy percentages based on average centipawn loss
-    w_avg_loss = white_centipawn_loss_total / max(1, white_move_count)
-    b_avg_loss = black_centipawn_loss_total / max(1, black_move_count)
-    
-    white_acc = max(0, min(100, round(100 - (w_avg_loss * 0.8), 1)))
-    black_acc = max(0, min(100, round(100 - (b_avg_loss * 0.8), 1)))
+    accuracy = {}
+    for color in (chess.WHITE, chess.BLACK):
+        vals = winpct_acc[color]
+        accuracy[color] = round(sum(vals) / len(vals), 1) if vals else None
 
-    return {
-        "white": white_name,
-        "black": black_name,
-        "date": pgn.headers.get("Date"),
-        "white_accuracy": f"{white_acc}%",
-        "black_accuracy": f"{black_acc}%",
-        "moves": analyzed_moves
-    }
+    return moves_out, accuracy
+
+
+# ============================================================
+# CHESS.COM SOURCE
+# ============================================================
+def fetch_chesscom_pgns(username, months=1):
+    games = []
+    now = datetime.utcnow()
+    year, month = now.year, now.month
+    for _ in range(months):
+        url = f"https://api.chess.com/pub/player/{username}/games/{year:04d}/{month:02d}"
+        resp = requests.get(url, headers={"User-Agent": "endgame-analyzer/1.0 (+github actions)"})
+        if resp.ok:
+            data = resp.json()
+            for g in data.get("games", []):
+                if "pgn" in g:
+                    games.append((g.get("url", g.get("uuid", "")), g["pgn"]))
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    return games
+
+
+def game_id_from_url(url_or_id):
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "_", url_or_id)
+    return slug[-40:] if slug else "game"
+
+
+# ============================================================
+# MAIN
+# ============================================================
+def main():
+    if not USERNAME:
+        sys.exit("Missing CHESSCOM_USERNAME secret.")
+
+    init_firebase()
+    already_synced = existing_game_ids(USERNAME)
+    print(f"{len(already_synced)} games already in Firebase for {USERNAME}.")
+
+    raw_games = fetch_chesscom_pgns(USERNAME, SYNC_MONTHS)
+    new_games = []
+    for game_id_raw, pgn_text in raw_games:
+        gid = game_id_from_url(game_id_raw)
+        if gid not in already_synced:
+            new_games.append((gid, pgn_text))
+
+    if not new_games:
+        print("No new games to analyze.")
+        return
+
+    new_games = new_games[-MAX_GAMES_PER_RUN:]  # newest first isn't guaranteed by the API, so just cap the batch
+    print(f"Analyzing {len(new_games)} new game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
+
+    engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    try:
+        for gid, pgn_text in new_games:
+            pgn_game = chess.pgn.read_game(io.StringIO(pgn_text))
+            if pgn_game is None:
+                continue
+            headers = pgn_game.headers
+            white = headers.get("White", "White")
+            black = headers.get("Black", "Black")
+            result = headers.get("Result", "*")
+            date = headers.get("UTCDate") or headers.get("Date", "")
+
+            print(f"  {white} vs {black} ({date}) [{gid}]")
+            moves, accuracy = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
+
+            game_obj = {
+                "white": white,
+                "black": black,
+                "white_accuracy": accuracy.get(chess.WHITE),
+                "black_accuracy": accuracy.get(chess.BLACK),
+                "result": result,
+                "date": date,
+                "moves": moves,
+            }
+            upload_game(USERNAME, gid, game_obj)
+            blunders = sum(1 for m in moves if m["classification"] == "Blunder")
+            print(f"    -> uploaded: {len(moves)} moves, {blunders} blunders")
+    finally:
+        engine.quit()
+
+    print("Done.")
+
 
 if __name__ == "__main__":
-    raw_games = fetch_chess_com_games(USERNAME)
-    processed_data = {}
-    for idx, g_data in enumerate(raw_games):
-        pgn_str = g_data.get("pgn")
-        if pgn_str:
-            res = analyze_game_pgn(pgn_str, USERNAME)
-            if res:
-                game_id = f"game_{idx}_{int(datetime.now().timestamp())}"
-                processed_data[game_id] = res
-
-    if processed_data and firebase_admin._apps:
-        ref = db.reference(f"users/{USERNAME.lower()}/games")
-        ref.update(processed_data)
-        print("Pushed dynamic analysis data successfully!")
-        
+    main()
