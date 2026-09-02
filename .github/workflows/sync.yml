@@ -1,121 +1,48 @@
-
-name: Chess Auto-Sync
+name: Sync & Analyze Games
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *'
+    # Every 3 hours
+    - cron: "0 */3 * * *"
+  workflow_dispatch: {}  # allows manual "Run workflow" trigger too
 
 jobs:
-  analyze-games:
+  analyze:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      CHESSCOM_USERNAME: ${{ secrets.CHESSCOM_USERNAME }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
+      STOCKFISH_PATH: /usr/local/bin/stockfish
+      STOCKFISH_RELEASE: sf_18  # pin the engine version here
+      ANALYSIS_DEPTH: 14
+      SYNC_MONTHS: 1
+      MAX_GAMES_PER_RUN: 20
+
     steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
-      - name: Install Dependencies
+      - name: Install Stockfish (pinned official release)
         run: |
-          pip install requests python-chess firebase-admin google-auth
+          curl -L -o stockfish.tar \
+            "https://github.com/official-stockfish/Stockfish/releases/download/${STOCKFISH_RELEASE}/stockfish-ubuntu-x86-64-avx2.tar"
+          tar -xf stockfish.tar
+          sudo mv stockfish/stockfish-ubuntu-x86-64-avx2 "$STOCKFISH_PATH"
+          sudo chmod +x "$STOCKFISH_PATH"
+          "$STOCKFISH_PATH" --help || true  # sanity check it runs
 
-      - name: Install Stockfish Engine
+      - name: Install Python dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y stockfish
+          python -m pip install --upgrade pip
+          pip install python-chess requests firebase-admin
 
-      - name: Run Clean Analyzer
-        env:
-          CHESS_COM_USERNAME: "forgotten_gambit"
-          FIREBASE_DB_URL: "https://chess-analyzer-36eb6-default-rtdb.firebaseio.com"
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          python -c '
-          import os, json, chess, chess.pgn, chess.engine, requests, io
-          import firebase_admin
-          from firebase_admin import credentials, db
-          from datetime import datetime
-
-          username = os.getenv("CHESS_COM_USERNAME", "forgotten_gambit")
-          db_url = os.getenv("FIREBASE_DB_URL")
-          sa_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
-
-          if sa_json and not firebase_admin._apps:
-              cred = credentials.Certificate(json.loads(sa_json))
-              firebase_admin.initialize_app(cred, {"databaseURL": db_url})
-
-          def classify(loss):
-              if loss <= 5: return "Best"
-              elif loss <= 15: return "Good"
-              elif loss <= 50: return "Inaccuracy"
-              elif loss <= 150: return "Mistake"
-              else: return "Blunder"
-
-          url = f"https://api.chess.com/pub/player/{username.lower()}/games/archives"
-          headers = {"User-Agent": "ChessAnalyzerBot/1.0"}
-          res = requests.get(url, headers=headers)
-          
-          if res.status_code == 200:
-              archives = res.json().get("archives", [])
-              if archives:
-                  games_res = requests.get(archives[-1], headers=headers)
-                  if games_res.status_code == 200:
-                      raw_games = games_res.json().get("games", [])[-3:]
-                      processed = {}
-                      
-                      for idx, g_data in enumerate(raw_games):
-                          pgn_str = g_data.get("pgn")
-                          if not pgn_str: continue
-                          pgn = chess.pgn.read_game(io.StringIO(pgn_str))
-                          if not pgn: continue
-
-                          engine = chess.engine.SimpleEngine.popen_uci("stockfish")
-                          engine.configure({"Threads": 2, "Hash": 128})
-                          board = pgn.board()
-                          moves_list = []
-                          w_loss, b_loss, w_cnt, b_cnt = 0, 0, 0, 0
-
-                          for node in pgn.mainline():
-                              move = node.move
-                              fen = board.fen()
-                              is_white = board.turn == chess.WHITE
-
-                              info_b = engine.analyse(board, chess.engine.Limit(depth=10))
-                              s_b = info_b["score"].relative.score(mate_score=10000) or 0
-
-                              board.push(move)
-
-                              info_a = engine.analyse(board, chess.engine.Limit(depth=10))
-                              s_a = info_a["score"].relative.score(mate_score=10000) or 0
-
-                              loss = max(0, abs(s_b) - abs(s_a))
-                              if is_white:
-                                  w_loss += loss; w_cnt += 1
-                              else:
-                                  b_loss += loss; b_cnt += 1
-
-                              moves_list.append({
-                                  "fen_before": fen,
-                                  "played": move.uci(),
-                                  "best_move": info_b.get("pv", [move])[0].uci(),
-                                  "classification": classify(loss),
-                                  "eval_cp": s_b,
-                                  "cp_loss": loss
-                              })
-
-                          engine.quit()
-                          w_acc = max(0, min(100, round(100 - ((w_loss / max(1, w_cnt)) * 0.8), 1)))
-                          b_acc = max(0, min(100, round(100 - ((b_loss / max(1, b_cnt)) * 0.8), 1)))
-
-                          processed[f"game_{idx}_{int(datetime.now().timestamp())}"] = {
-                              "white": pgn.headers.get("White"),
-                              "black": pgn.headers.get("Black"),
-                              "white_accuracy": f"{w_acc}%",
-                              "black_accuracy": f"{b_acc}%",
-                              "moves": moves_list
-                          }
-
-                      if processed and firebase_admin._apps:
-                          db.reference(f"users/{username.lower()}/games").update(processed)
-                          print("Synced clean analysis successfully!")
-          '
+      - name: Run analyzer
+        run: python analyzer.py
