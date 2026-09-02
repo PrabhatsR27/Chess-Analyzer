@@ -21,12 +21,11 @@ jobs:
         run: |
           pip install requests python-chess firebase-admin google-auth
 
-      - name: Install Stockfish 18
+      - name: Install Stockfish Engine
         run: |
-          sudo wget -q https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-avx2.tar.gz
-          sudo tar -xzf stockfish-ubuntu-x86-64-avx2.tar.gz
-          sudo mv stockfish/stockfish-* /usr/local/bin/stockfish
-          sudo chmod +x /usr/local/bin/stockfish
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+          which stockfish
 
       - name: Run Analyzer Script
         env:
