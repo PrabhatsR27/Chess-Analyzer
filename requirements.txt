@@ -1,0 +1,4 @@
+chess>=1.10.0
+requests>=2.31.0
+firebase-admin>=6.5.0
+
