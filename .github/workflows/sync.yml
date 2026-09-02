@@ -1,22 +1,37 @@
 name: Chess Auto-Sync
 
 on:
-  schedule:
-    - cron: '0 */3 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
 
 jobs:
   analyze-games:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: sudo apt-get update && sudo apt-get install -y stockfish
-      - env:
-          CHESS_USERNAME: ${{ secrets.CHESS_USERNAME }}
-          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests python-chess firebase-admin google-auth
+
+      - name: Install Stockfish 18
+        run: |
+          sudo wget -q https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-avx2.tar.gz
+          sudo tar -xzf stockfish-ubuntu-x86-64-avx2.tar.gz
+          sudo mv stockfish/stockfish-* /usr/local/bin/stockfish
+          sudo chmod +x /usr/local/bin/stockfish
+
+      - name: Run Analyzer Script
+        env:
+          CHESS_COM_USERNAME: "forgotten_gambit"
+          FIREBASE_DB_URL: "https://chess-analyzer-36eb6-default-rtdb.firebaseio.com"
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: python analyzer.py
+        
