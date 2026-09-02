@@ -81,11 +81,11 @@
 
     <div class="player-stats">
       <div class="stat-box">
-        <div class="stat-val" id="white-acc">92%</div>
+        <div class="stat-val" id="white-acc">-</div>
         <div class="stat-lbl">White Accuracy</div>
       </div>
       <div class="stat-box">
-        <div class="stat-val" id="black-acc">88%</div>
+        <div class="stat-val" id="black-acc">-</div>
         <div class="stat-lbl">Black Accuracy</div>
       </div>
     </div>
@@ -176,6 +176,8 @@
     
     document.getElementById('white-player').innerText = `W: ${meta.white || 'Player'}`;
     document.getElementById('black-player').innerText = `B: ${meta.black || 'Player'}`;
+    document.getElementById('white-acc').innerText = meta.white_accuracy || "N/A";
+    document.getElementById('black-acc').innerText = meta.black_accuracy || "N/A";
 
     switchTab('analysis');
     document.querySelectorAll('.tab-btn')[0].classList.remove('active');
@@ -205,11 +207,13 @@
 
     const title = document.getElementById('status-title');
     const desc = document.getElementById('status-desc');
-    if (moveData.classification === "Blunder") {
+    const classification = moveData.classification || "Good";
+
+    if (classification === "Blunder") {
       title.innerText = "✗ Blunder";
       desc.innerText = `Played: ${moveData.played} | Best: ${moveData.best_move}`;
     } else {
-      title.innerText = "✓ " + moveData.classification;
+      title.innerText = "✓ " + classification;
       desc.innerText = `Played: ${moveData.played}`;
     }
   }
@@ -221,6 +225,7 @@
   }
 
   function updateEvalBar(cp) {
+    // Map centipawn evaluation (-500 to +500) to visual height percentage (5% to 95%)
     let winChance = 50 + (cp / 10);
     winChance = Math.max(5, Math.min(95, winChance));
     document.getElementById('eval-fill').style.height = winChance + "%";
@@ -238,4 +243,3 @@
 </script>
 </body>
 </html>
-
