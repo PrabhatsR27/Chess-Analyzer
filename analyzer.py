@@ -47,7 +47,9 @@ def analyze_game_pgn(pgn_text, player_username):
     if not pgn:
         return None
 
-    engine = chess.engine.SimpleEngine.popen_uci("/usr/local/bin/stockfish")
+    # Change this line inside analyze_game_pgn():
+engine = chess.engine.SimpleEngine.popen_uci("stockfish")
+
     engine.configure({"Threads": 2, "Hash": 128})
 
     board = pgn.board()
