@@ -5,112 +5,107 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Pro Chess Analytics</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0f172a; --surface: #1e293b; --surface-hover: #334155; 
-      --border: #334155; --text: #f8fafc; --text-muted: #94a3b8;
-      --accent: #3b82f6; --best: #10b981; --blunder: #ef4444;
+      --bg: #0B0F19; --surface: #151C2C; --surface-hover: #1E293B; 
+      --border: #2A3441; --text-main: #F8FAFC; --text-muted: #94A3B8;
+      --accent: #3B82F6; --best: #10B981; --blunder: #EF4444;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 0; display: flex; justify-content: center; min-height: 100vh; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+    body { background: var(--bg); color: var(--text-main); display: flex; justify-content: center; min-height: 100vh; }
     .container { width: 100%; max-width: 480px; display: flex; flex-direction: column; background: var(--bg); }
     
-    /* Header & Tabs */
-    header { padding: 20px 16px 10px; text-align: center; background: var(--surface); border-bottom: 1px solid var(--border); }
-    header h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: 0.5px; }
-    .tabs { display: flex; margin-top: 15px; border-bottom: 2px solid var(--border); }
-    .tab-btn { flex: 1; padding: 10px; background: transparent; border: none; color: var(--text-muted); font-weight: 600; cursor: pointer; transition: 0.2s; }
-    .tab-btn.active { color: var(--accent); border-bottom: 2px solid var(--accent); margin-bottom: -2px; }
+    header { padding: 20px; background: var(--bg); }
+    header h1 { font-size: 1.25rem; font-weight: 700; color: #fff; }
+    .tabs { display: flex; margin-top: 15px; border-bottom: 1px solid var(--border); }
+    .tab-btn { flex: 1; padding: 10px; background: transparent; border: none; color: var(--text-muted); font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
+    .tab-btn.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
     
-    /* Content Areas */
     .tab-content { display: none; padding: 16px; }
     .tab-content.active { display: block; }
     
-    /* Inputs */
-    .form-group { margin-bottom: 12px; }
-    label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 6px; }
-    input { width: 100%; padding: 12px; background: var(--surface); border: 1px solid var(--border); color: #fff; border-radius: 8px; font-size: 1rem; outline: none; transition: 0.2s; }
-    input:focus { border-color: var(--accent); }
-    .btn-primary { width: 100%; padding: 14px; border-radius: 8px; border: none; font-weight: 600; font-size: 1rem; cursor: pointer; background: var(--accent); color: #fff; margin-top: 10px; }
+    .btn-primary { width: 100%; padding: 14px; border-radius: 10px; border: none; font-weight: 600; font-size: 1rem; cursor: pointer; background: var(--accent); color: #fff; margin-bottom: 16px; }
     
-    /* Dashboard Stats */
-    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0; }
-    .stat-card { background: var(--surface); padding: 16px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
-    .stat-val { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
-    .stat-label { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+    .match-header { background: var(--surface); padding: 12px; border-radius: 10px; margin-bottom: 12px; border: 1px solid var(--border); display: flex; justify-content: space-between; font-size: 0.85rem; }
+    .player-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+    .stat-box { background: var(--surface); padding: 10px; border-radius: 8px; text-align: center; border: 1px solid var(--border); }
+    .stat-val { font-size: 1.1rem; font-weight: 700; color: #fff; }
+    .stat-lbl { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; }
+
+    .board-container { display: flex; gap: 8px; margin-bottom: 12px; align-items: stretch; }
+    #eval-bar { width: 16px; background: #333; border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; border: 1px solid var(--border); }
+    #eval-fill { background: #fff; width: 100%; height: 50%; transition: height 0.3s ease; }
+    #board-wrapper { flex: 1; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
     
-    /* Game List */
-    .game-list { display: flex; flex-direction: column; gap: 10px; }
-    .game-card { background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: 0.2s; }
-    .game-card:hover { background: var(--surface-hover); }
-    .game-title { font-weight: 600; font-size: 0.95rem; }
-    .game-meta { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
-    
-    /* Board Area */
-    #board-wrapper { width: 100%; border-radius: 4px; overflow: hidden; margin-bottom: 12px; border: 1px solid var(--border); }
-    .nav-controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
-    .nav-btn { background: var(--surface); color: var(--text); padding: 12px 0; border: 1px solid var(--border); border-radius: 8px; font-size: 1rem; cursor: pointer; }
-    .nav-btn:active { background: var(--surface-hover); }
-    
-    /* Analysis Box */
-    .analysis-box { background: var(--surface); padding: 16px; border-radius: 12px; text-align: center; border: 1px solid var(--border); }
-    .move-status { font-size: 1.1rem; font-weight: 700; margin-bottom: 4px; }
-    .move-detail { font-size: 0.9rem; color: var(--text-muted); }
+    .highlight-square { box-shadow: inset 0 0 3px 3px rgba(59, 130, 246, 0.6); }
+
+    .nav-controls { display: grid; grid-template-columns: repeat(4, 1fr) 1.2fr; gap: 6px; margin-bottom: 12px; }
+    .nav-btn { background: var(--surface); color: var(--text-main); padding: 12px 0; border: 1px solid var(--border); border-radius: 8px; font-weight: 600; cursor: pointer; }
+    .play-sandbox-btn { background: var(--best); color: #000; border: none; border-radius: 8px; font-weight: 700; font-size: 0.8rem; cursor: pointer; }
+
+    .analysis-box { background: var(--surface); padding: 14px; border-radius: 10px; text-align: center; border: 1px solid var(--border); }
+    .move-status { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+    .move-detail { font-size: 0.85rem; color: var(--text-muted); }
+
+    .game-card { background: var(--surface); padding: 14px; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .game-title { font-weight: 600; font-size: 0.9rem; }
+    .game-meta { font-size: 0.75rem; color: var(--text-muted); }
   </style>
 </head>
 <body>
 
 <div class="container">
   <header>
-    <h1>Pro Chess Analytics</h1>
+    <h1>♟️ Pro Chess Analytics</h1>
     <div class="tabs">
-      <button class="tab-btn active" onclick="switchTab('profile')">Profile & Games</button>
+      <button class="tab-btn active" onclick="switchTab('profile')">Dashboard</button>
       <button class="tab-btn" onclick="switchTab('analysis')">Analysis Board</button>
     </div>
   </header>
 
-  <!-- Profile & Games Tab -->
-    <!-- Profile & Games Tab -->
   <div id="profile" class="tab-content active">
-    <div class="form-group">
-      <label>Database URL</label>
+    <div style="display: none;">
       <input type="text" id="db-url" value="https://chess-analyzer-36eb6-default-rtdb.firebaseio.com" />
-    </div>
-    <div class="form-group">
-      <label>Chess Username</label>
       <input type="text" id="username" value="forgotten_gambit" />
     </div>
-    <button class="btn-primary" id="load-btn">Connect & Fetch Data</button>
+    <button class="btn-primary" id="load-btn">Sync Recent Games</button>
+    <div id="game-list" class="game-list"></div>
+  </div>
 
-    <div class="stats-grid" id="stats-grid" style="display: none;">
-      <div class="stat-card">
-        <div class="stat-val" id="stat-total-games">0</div>
-        <div class="stat-label">Analyzed Games</div>
+  <div id="analysis" class="tab-content">
+    <div class="match-header">
+      <span id="white-player">White: -</span>
+      <span id="black-player">Black: -</span>
+    </div>
+
+    <div class="player-stats">
+      <div class="stat-box">
+        <div class="stat-val" id="white-acc">92%</div>
+        <div class="stat-lbl">White Accuracy</div>
       </div>
-      <div class="stat-card">
-        <div class="stat-val" id="stat-total-moves">0</div>
-        <div class="stat-label">Moves Evaluated</div>
+      <div class="stat-box">
+        <div class="stat-val" id="black-acc">88%</div>
+        <div class="stat-lbl">Black Accuracy</div>
       </div>
     </div>
 
-    <div class="game-list" id="game-list"></div>
-  </div>
-
-
-  <!-- Analysis Board Tab -->
-  <div id="analysis" class="tab-content">
-    <div id="board-wrapper"><div id="board" style="width: 100%"></div></div>
+    <div class="board-container">
+      <div id="eval-bar"><div id="eval-fill"></div></div>
+      <div id="board-wrapper"><div id="board" style="width: 100%"></div></div>
+    </div>
     
     <div class="nav-controls">
       <button class="nav-btn" onclick="goToMove(0)">|◀</button>
       <button class="nav-btn" onclick="goToMove(currentStep - 1)">◀</button>
       <button class="nav-btn" onclick="goToMove(currentStep + 1)">▶</button>
       <button class="nav-btn" onclick="goToMove(currentMoves.length)">▶|</button>
+      <button class="play-sandbox-btn" onclick="enableSandbox()">Play From Here</button>
     </div>
 
-    <div class="analysis-box">
-      <div class="move-status" id="status-title" style="color: var(--text)">Awaiting Game</div>
-      <div class="move-detail" id="status-desc">Select a game from the Profile tab to begin.</div>
+    <div class="analysis-box" id="analysis-box">
+      <div class="move-status" id="status-title">Awaiting Game</div>
+      <div class="move-detail" id="status-desc">Select a game from the Dashboard.</div>
     </div>
   </div>
 </div>
@@ -123,100 +118,82 @@
   let gamesData = {};
   let currentMoves = [];
   let currentStep = 0;
+  let isSandboxMode = false;
   const game = new Chess();
-  const board = Chessboard('board', { position: 'start', pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png' });
+  
+  const boardConfig = {
+    position: 'start',
+    draggable: true,
+    pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+    onDragStart: (source, piece) => {
+      if (!isSandboxMode && currentStep > 0) return false;
+      const moves = game.moves({ square: source, verbose: true });
+      if (moves.length === 0) return false;
+      highlightSquares(source, moves);
+    },
+    onDrop: (source, target) => {
+      removeHighlights();
+      const move = game.move({ from: source, to: target, promotion: 'q' });
+      if (move === null) return 'snapback';
+      board.position(game.fen());
+    }
+  };
 
-  // Tab Switcher
+  const board = Chessboard('board', boardConfig);
+
   function switchTab(tabId) {
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.getElementById(tabId).classList.add('active');
     event.currentTarget.classList.add('active');
-    if (tabId === 'analysis') board.resize(); // Fix board rendering on tab switch
+    if (tabId === 'analysis') board.resize();
   }
 
-  // Load Data
   document.getElementById('load-btn').addEventListener('click', async () => {
-    const dbUrl = document.getElementById('db-url').value.trim().replace(/\/$/, "");
-    const user = document.getElementById('username').value.trim().toLowerCase();
-    const btn = document.getElementById('load-btn');
+    const dbUrl = document.getElementById('db-url').value;
+    const user = document.getElementById('username').value;
+    const res = await fetch(`${dbUrl}/users/${user}/games.json`);
+    gamesData = await res.json();
     
-    if (!dbUrl || !user) return alert("Please fill in both fields.");
-    btn.innerText = "Loading Cloud Data...";
-
-    try {
-      const res = await fetch(`${dbUrl}/users/${user}/games.json`);
-      if (!res.ok) throw new Error("Database connection denied.");
-      gamesData = await res.json();
-      
-      if (!gamesData) {
-        btn.innerText = "Connect & Fetch Data";
-        return alert("No games found in the database.");
-      }
-
-      buildProfile();
-      btn.innerText = "Sync Complete!";
-      setTimeout(() => btn.innerText = "Connect & Fetch Data", 2000);
-    } catch (err) {
-      alert("Error: " + err.message);
-      btn.innerText = "Connect & Fetch Data";
-    }
-  });
-
-  // Build Profile & Game List
-  function buildProfile() {
-    let totalGames = 0;
-    let totalMoves = 0;
     const listEl = document.getElementById('game-list');
     listEl.innerHTML = '';
-
     Object.keys(gamesData).reverse().forEach(id => {
       const g = gamesData[id];
       if (!g.moves) return;
-      
-      totalGames++;
-      totalMoves += g.moves.length;
-
-      // Create Game Card
       const card = document.createElement('div');
       card.className = 'game-card';
       card.onclick = () => loadGame(id);
-      card.innerHTML = `
-        <div>
-          <div class="game-title">Match ID: ${id.slice(-6)}</div>
-          <div class="game-meta">${g.moves.length} moves analyzed</div>
-        </div>
-        <div style="color: var(--accent); font-size: 1.2rem;">▶</div>
-      `;
+      card.innerHTML = `<div class="game-title">Match: ${g.white || 'White'} vs ${g.black || 'Black'}</div><div class="game-meta">${g.moves.length} moves</div>`;
       listEl.appendChild(card);
     });
+    alert("Games synced successfully!");
+  });
 
-    document.getElementById('stat-total-games').innerText = totalGames;
-    document.getElementById('stat-total-moves').innerText = totalMoves;
-    document.getElementById('stats-grid').style.display = 'grid';
-  }
-
-  // Load Game to Board
   function loadGame(id) {
-    currentMoves = gamesData[id].moves;
-    switchTab('analysis');
+    const meta = gamesData[id];
+    currentMoves = meta.moves;
+    isSandboxMode = false;
     
-    // Auto-switch visual tab active state
+    document.getElementById('white-player').innerText = `W: ${meta.white || 'Player'}`;
+    document.getElementById('black-player').innerText = `B: ${meta.black || 'Player'}`;
+
+    switchTab('analysis');
     document.querySelectorAll('.tab-btn')[0].classList.remove('active');
     document.querySelectorAll('.tab-btn')[1].classList.add('active');
-
     goToMove(0);
   }
 
-  // Board Navigation
   function goToMove(index) {
+    isSandboxMode = false;
     if (index < 0 || index > currentMoves.length) return;
     currentStep = index;
 
     if (currentStep === 0) {
       game.reset();
       board.position(game.fen());
-      updateAnalysisBox("Start of Game", "Use arrows to step through moves.", "var(--text)");
+      updateEvalBar(0);
+      document.getElementById('status-title').innerText = "Start of Game";
+      document.getElementById('status-desc').innerText = "Step through or click Play From Here.";
       return;
     }
 
@@ -224,22 +201,41 @@
     game.load(moveData.fen_before);
     game.move(moveData.played, { sloppy: true });
     board.position(game.fen());
+    updateEvalBar(moveData.eval_cp || 0);
 
-    const played = moveData.played;
-    const best = moveData.best_move;
-
-    if (!best || played === best) {
-      updateAnalysisBox("✅ Good Move", `Played: ${played}`, "var(--best)");
+    const title = document.getElementById('status-title');
+    const desc = document.getElementById('status-desc');
+    if (moveData.classification === "Blunder") {
+      title.innerText = "✗ Blunder";
+      desc.innerText = `Played: ${moveData.played} | Best: ${moveData.best_move}`;
     } else {
-      updateAnalysisBox("⚠️ Missed Tactic", `Played: ${played} | Best: ${best}`, "var(--blunder)");
+      title.innerText = "✓ " + moveData.classification;
+      desc.innerText = `Played: ${moveData.played}`;
     }
   }
 
-  function updateAnalysisBox(title, desc, color) {
-    document.getElementById('status-title').innerText = title;
-    document.getElementById('status-title').style.color = color;
-    document.getElementById('status-desc').innerText = desc;
+  function enableSandbox() {
+    isSandboxMode = true;
+    document.getElementById('status-title').innerText = "🎮 Sandbox Active";
+    document.getElementById('status-desc').innerText = "Drag pieces freely to test custom variations.";
+  }
+
+  function updateEvalBar(cp) {
+    let winChance = 50 + (cp / 10);
+    winChance = Math.max(5, Math.min(95, winChance));
+    document.getElementById('eval-fill').style.height = winChance + "%";
+  }
+
+  function highlightSquares(source, moves) {
+    $('#board .square-55d63').removeClass('highlight-square');
+    $('#board .square-' + source).addClass('highlight-square');
+    moves.forEach(m => $('#board .square-' + m.to).addClass('highlight-square'));
+  }
+
+  function removeHighlights() {
+    $('#board .square-55d63').removeClass('highlight-square');
   }
 </script>
 </body>
 </html>
+
