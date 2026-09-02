@@ -122,7 +122,7 @@
   // 2. Fetch Games directly from Firebase via REST
   document.getElementById('load-games-btn').addEventListener('click', async () => {
     let dbUrl = document.getElementById('db-url').value.trim().replace(/\/$/, "");
-    const user = document.getElementById('username').value.trim().toLowerCase();
+    const user = document.getElementById('username').value.trim();
 
     if (!dbUrl || !user) {
       alert("Please fill in both Database URL and Username.");
