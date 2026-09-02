@@ -211,7 +211,6 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
 
     node = pgn_game
     ply = 0
-    prior_mover_cp = 0
 
     while node.variations:
         next_node = node.variations[0]
@@ -225,11 +224,13 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         second_cp = lines[1]["cp"] if len(lines) > 1 else best_line["cp"]
         is_best = (move == best_line["move"])
         sac = detect_sacrifice(board, move)
+        
+        # The true evaluation of the position before the player acts
+        best_cp_mover = best_line["cp"]
 
         board.push(move)
         after_score = engine.analyse(board, chess.engine.Limit(depth=depth))["score"]
         played_cp_mover = score_to_cp(after_score, mover_color)
-        best_cp_mover = best_line["cp"]
         had_only_good_move = (best_line["cp"] - second_cp) >= GREAT_GAP
 
         classification = classify_move(
@@ -239,7 +240,7 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             is_best=is_best,
             had_only_good_move=had_only_good_move,
             sacrifice=sac,
-            prior_eval_for_mover=prior_mover_cp,
+            prior_eval_for_mover=best_cp_mover, # FIXED: passing the correct prior eval
         )
 
         # eval_cp stored from WHITE's perspective for a consistent eval bar
@@ -252,7 +253,8 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         if clk is not None:
             prev_clock[mover_color] = clk
 
-        wp_before = cp_to_winpct(prior_mover_cp)
+        # FIXED ACCURACY MATH: Compare the played move against the best possible move
+        wp_before = cp_to_winpct(best_cp_mover)
         wp_after = cp_to_winpct(played_cp_mover)
         winpct_acc[mover_color].append(move_accuracy_pct(wp_before, wp_after))
 
@@ -267,7 +269,6 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             entry["time_taken"] = time_taken
         moves_out.append(entry)
 
-        prior_mover_cp = played_cp_mover
         node = next_node
         ply += 1
 
@@ -277,8 +278,7 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         accuracy[color] = round(sum(vals) / len(vals), 1) if vals else None
 
     return moves_out, accuracy
-
-
+        
 # ============================================================
 # CHESS.COM SOURCE
 # ============================================================
