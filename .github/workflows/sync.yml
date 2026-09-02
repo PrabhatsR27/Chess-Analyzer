@@ -1,3 +1,4 @@
+
 name: Chess Auto-Sync
 
 on:
@@ -23,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stockfish
 
-      - name: Run Inline Python Analyzer
+      - name: Run Clean Analyzer
         env:
           CHESS_COM_USERNAME: "forgotten_gambit"
           FIREBASE_DB_URL: "https://chess-analyzer-36eb6-default-rtdb.firebaseio.com"
@@ -116,5 +117,5 @@ jobs:
 
                       if processed and firebase_admin._apps:
                           db.reference(f"users/{username.lower()}/games").update(processed)
-                          print("Synced successfully!")
+                          print("Synced clean analysis successfully!")
           '
