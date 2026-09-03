@@ -2,8 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <title>Endgame — Chess Analytics</title>
+
+<!-- PWA: installability -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0A0A0C" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Endgame" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css" />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -28,39 +39,84 @@
     color:var(--text); font-family:'Inter',sans-serif;
     display:flex; justify-content:center; min-height:100vh; -webkit-tap-highlight-color:transparent;
   }
-  .container{width:100%; max-width:480px; display:flex; flex-direction:column; background:var(--bg); padding-bottom:28px; min-height:100vh;}
+  .container{width:100%; max-width:480px; display:flex; flex-direction:column; background:var(--bg);
+    padding-bottom:calc(84px + env(safe-area-inset-bottom)); min-height:100vh;}
 
   h1,h2,.serif{font-family:'Fraunces',serif;}
   ::-webkit-scrollbar{display:none;}
   button{font-family:inherit;}
 
-  header{padding:22px 18px 0;}
+  header{padding:22px 18px 14px; position:sticky; top:0; z-index:40; background:transparent;
+    transition:background .25s ease, box-shadow .25s ease, backdrop-filter .25s ease, padding .25s ease;}
+  header.scrolled{background:rgba(10,10,12,0.72); backdrop-filter:blur(18px) saturate(160%);
+    -webkit-backdrop-filter:blur(18px) saturate(160%); box-shadow:0 8px 24px rgba(0,0,0,0.35); padding-bottom:12px;}
   .brand{display:flex; align-items:baseline; gap:8px;}
   .brand-mark{width:9px; height:9px; border-radius:50%; background:var(--gold); flex-shrink:0; box-shadow:0 0 10px rgba(201,162,39,.6);}
   header h1{font-size:1.4rem; font-weight:700; color:var(--text); letter-spacing:-0.01em;}
   header p{font-size:0.78rem; color:var(--text-dim); margin-top:2px; margin-left:17px;}
 
-  .tabs{display:flex; margin-top:18px; border-bottom:1px solid var(--border); gap:4px;}
-  .tab-btn{flex:1; padding:11px 0; background:transparent; border:none; color:var(--text-faint);
-    font-family:'Inter',sans-serif; font-weight:700; font-size:0.85rem; cursor:pointer;
-    border-bottom:2px solid transparent; transition:color .15s;}
-  .tab-btn.active{color:var(--gold-bright); border-bottom:2px solid var(--gold);}
-
   .tab-content{display:none; padding:16px 16px 4px;}
-  .tab-content.active{display:block;}
+  .tab-content.active{display:block; animation:tabIn .28s cubic-bezier(.2,.8,.2,1);}
+  @keyframes tabIn{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
+  @media (prefers-reduced-motion: reduce){ .tab-content.active, .subview.active, .isubview.active{animation:none;} }
+
+  /* ---- bottom nav (replaces old top tab bar) ---- */
+  .bottom-nav{position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:480px;
+    display:flex; justify-content:space-around; gap:2px; z-index:50;
+    padding:7px 6px calc(7px + env(safe-area-inset-bottom));
+    background:rgba(20,20,23,0.72); backdrop-filter:blur(20px) saturate(160%); -webkit-backdrop-filter:blur(20px) saturate(160%);
+    border-top:1px solid var(--border);}
+  .bn-btn{flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; background:transparent;
+    border:none; color:var(--text-faint); padding:5px 0 3px; cursor:pointer; transition:color .15s, transform .1s;}
+  .bn-btn:active{transform:scale(0.92);}
+  .bn-icon-wrap{width:36px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:999px;
+    transition:background .18s ease;}
+  .bn-btn.active{color:var(--gold-bright);}
+  .bn-btn.active .bn-icon-wrap{background:rgba(201,162,39,0.14);}
+  .bn-icon{font-size:1.05rem; line-height:1;}
+  .bn-label{font-size:0.61rem; font-weight:700; letter-spacing:.01em;}
 
   /* ---- shared ---- */
   .card{background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:14px;}
-  .btn-primary{width:100%; padding:14px; border-radius:12px; border:none; font-weight:700; font-size:0.95rem;
+  .btn-primary{width:100%; padding:14px; border-radius:999px; border:none; font-weight:700; font-size:0.95rem;
     cursor:pointer; background:linear-gradient(180deg, var(--gold-bright), var(--gold)); color:var(--gold-ink); margin-bottom:12px; transition:opacity .15s, transform .1s;
     box-shadow:0 4px 14px rgba(201,162,39,0.18);}
-  .btn-primary:active{opacity:0.85; transform:translateY(1px);}
+  .btn-primary:active{opacity:0.85; transform:translateY(1px) scale(0.99);}
   .btn-primary:disabled{opacity:0.5;}
-  .btn-ghost{padding:11px 0; border-radius:11px; border:1px solid var(--border); background:var(--surface);
-    color:var(--text-dim); font-weight:700; font-size:0.78rem; cursor:pointer;}
-  .btn-ghost:active{background:var(--surface-2);}
+  .btn-ghost{padding:11px 0; border-radius:999px; border:1px solid var(--border); background:var(--surface);
+    color:var(--text-dim); font-weight:700; font-size:0.78rem; cursor:pointer; transition:background .15s, transform .1s;}
+  .btn-ghost:active{background:var(--surface-2); transform:scale(0.97);}
   .btn-ghost:disabled{opacity:0.45;}
-  .sync-status{text-align:center; font-size:0.72rem; color:var(--text-faint); margin:8px 0 4px;}
+  .sync-status{text-align:center; font-size:0.72rem; color:var(--text-faint); margin:8px 0 4px; display:flex; align-items:center; justify-content:center; gap:6px;}
+  .sync-dot{width:6px; height:6px; border-radius:50%; background:var(--text-faint); flex-shrink:0;}
+  .sync-dot.live{background:var(--best); box-shadow:0 0 6px rgba(76,175,109,.7);}
+  .sync-dot.busy{background:var(--gold); box-shadow:0 0 6px rgba(201,162,39,.7); animation:pulse-dot 1s ease-in-out infinite;}
+  @keyframes pulse-dot{0%,100%{opacity:1;} 50%{opacity:.35;}}
+
+  /* ---- pill badges (install / offline / update) ---- */
+  .pill-badge{display:inline-flex; align-items:center; gap:5px; padding:5px 11px; border-radius:999px;
+    font-size:0.72rem; font-weight:700; border:1px solid var(--border); background:var(--surface-2); color:var(--text-dim);
+    cursor:pointer; transition:transform .1s, opacity .15s; white-space:nowrap;}
+  .pill-badge:active{transform:scale(0.96);}
+  .pill-badge.gold{position:relative; overflow:hidden; background:linear-gradient(180deg, var(--gold-bright), var(--gold));
+    color:var(--gold-ink); border-color:transparent; box-shadow:0 3px 10px rgba(201,162,39,0.22);}
+  .pill-badge.gold::after{content:''; position:absolute; top:0; left:-60%; width:35%; height:100%;
+    background:linear-gradient(120deg, transparent, rgba(255,255,255,0.6), transparent); transform:skewX(-20deg);
+    animation:pillShimmer 3.4s ease-in-out infinite;}
+  @keyframes pillShimmer{ 0%{left:-60%;} 45%{left:130%;} 100%{left:130%;} }
+  @media (prefers-reduced-motion: reduce){ .pill-badge.gold::after{ animation:none; display:none; } }
+  .pill-badge.offline{background:rgba(224,85,93,0.12); border-color:rgba(224,85,93,0.35); color:var(--blunder);}
+  .pill-row{display:flex; justify-content:center; gap:8px; flex-wrap:wrap; margin:10px 0 2px;}
+  #install-pill{display:none;}
+  #offline-pill{display:none;}
+
+  /* ---- skeleton shimmer (instant paint while cache/network loads) ---- */
+  .skel{position:relative; overflow:hidden; background:var(--surface-2); border-radius:10px;}
+  .skel::after{content:''; position:absolute; inset:0; transform:translateX(-100%);
+    background:linear-gradient(90deg, transparent, rgba(243,241,234,0.06), transparent); animation:shimmer 1.3s infinite;}
+  @keyframes shimmer{100%{transform:translateX(100%);}}
+  .skel-card{height:64px; border-radius:14px; margin-bottom:8px;}
+  .skel-line{height:12px; border-radius:6px;}
 
   .empty-state{text-align:center; padding:48px 20px; color:var(--text-faint);}
   .empty-state .glyph{font-size:1.8rem; margin-bottom:10px; opacity:0.6;}
@@ -73,7 +129,13 @@
   /* ---- profile / games tab header ---- */
   .profile-card{display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border);
     border-radius:16px; padding:12px 14px; margin-bottom:12px;}
-  .profile-avatar{width:44px; height:44px; border-radius:12px; background:linear-gradient(150deg,#3a3a42,#1e1e23);
+  .avatar-ring{position:relative; width:44px; height:44px; flex-shrink:0;}
+  .avatar-ring::before{content:''; position:absolute; inset:-2px; border-radius:14px;
+    background:conic-gradient(from 0deg, var(--gold-bright), var(--gold-dim) 35%, var(--gold) 65%, var(--gold-bright) 100%);
+    animation:ringSpin 6s linear infinite;}
+  @keyframes ringSpin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce){ .avatar-ring::before{ animation:none; } }
+  .profile-avatar{position:relative; z-index:1; width:44px; height:44px; border-radius:12px; background:linear-gradient(150deg,#3a3a42,#1e1e23);
     display:flex; align-items:center; justify-content:center; font-family:'Fraunces',serif; font-weight:700;
     font-size:1.15rem; color:var(--gold-bright); flex-shrink:0; border:1px solid var(--border);}
   .profile-info{flex:1; min-width:0;}
@@ -81,6 +143,15 @@
   .profile-name .crown{color:var(--gold); font-size:0.8rem;}
   .profile-meta{font-size:0.75rem; color:var(--text-dim); margin-top:1px;}
   .profile-chevron{color:var(--text-faint); font-size:0.9rem;}
+
+  /* ---- toast (bottom, sits above the bottom nav) ---- */
+  .toast-stack{position:fixed; left:50%; transform:translateX(-50%); bottom:calc(78px + env(safe-area-inset-bottom));
+    width:100%; max-width:480px; display:flex; flex-direction:column; align-items:center; gap:8px; padding:0 16px;
+    z-index:80; pointer-events:none;}
+  .toast{pointer-events:auto; background:var(--surface-3); border:1px solid var(--border); color:var(--text);
+    font-size:0.8rem; font-weight:600; padding:10px 16px; border-radius:999px; box-shadow:0 8px 24px rgba(0,0,0,0.35);
+    opacity:0; transform:translateY(10px) scale(0.96); transition:opacity .22s ease, transform .22s ease;}
+  .toast.show{opacity:1; transform:translateY(0) scale(1);}
 
   .streak-row{display:flex; gap:5px; margin-bottom:14px;}
   .streak-pill{flex:1; height:8px; border-radius:5px; background:var(--surface-3);}
@@ -129,12 +200,12 @@
   .coach-badge{width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
     font-size:0.95rem; border:2px solid;}
   .analyze-btn{background:var(--surface-3); border:1px solid var(--border); color:var(--text-dim); font-weight:700;
-    font-size:0.72rem; padding:8px 12px; border-radius:9px;}
+    font-size:0.72rem; padding:8px 12px; border-radius:999px;}
 
   /* ---- stats tab ---- */
-  .segmented{display:flex; background:var(--surface); border:1px solid var(--border); border-radius:11px; padding:3px; margin-bottom:16px;}
+  .segmented{display:flex; background:var(--surface); border:1px solid var(--border); border-radius:999px; padding:3px; margin-bottom:16px;}
   .segmented button{flex:1; padding:9px 0; border:none; background:transparent; color:var(--text-dim);
-    font-weight:700; font-size:0.8rem; border-radius:8px; cursor:pointer;}
+    font-weight:700; font-size:0.8rem; border-radius:999px; cursor:pointer; transition:background .15s, color .15s;}
   .segmented button.active{background:var(--surface-3); color:var(--text);}
 
   .stat-row{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;}
@@ -181,12 +252,12 @@
   .side-tag{font-size:0.65rem; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.03em;}
   .match-vs{font-family:'Fraunces',serif; color:var(--text-faint); font-size:0.85rem;}
 
-  .subnav{display:flex; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:3px; margin-bottom:14px;}
+  .subnav{display:flex; background:var(--surface); border:1px solid var(--border); border-radius:999px; padding:3px; margin-bottom:14px;}
   .subnav button{flex:1; padding:9px 0; border:none; background:transparent; color:var(--text-faint);
-    font-weight:700; font-size:0.78rem; border-radius:9px; cursor:pointer;}
+    font-weight:700; font-size:0.78rem; border-radius:999px; cursor:pointer; transition:background .15s, color .15s;}
   .subnav button.active{background:var(--gold); color:var(--gold-ink);}
   .subview{display:none;}
-  .subview.active{display:block;}
+  .subview.active{display:block; animation:tabIn .28s cubic-bezier(.2,.8,.2,1);}
 
   /* coach bubble */
   .coach-row{display:flex; align-items:flex-start; gap:10px; margin-bottom:14px;}
@@ -304,15 +375,15 @@
   .theme-btn{width:36px; height:36px; border-radius:11px; border:1px solid var(--border); background:var(--surface);
     display:flex; align-items:center; justify-content:center; font-size:1.05rem; cursor:pointer; flex-shrink:0; color:var(--text);}
   .theme-btn:active{background:var(--surface-2);}
-  .tabs .tab-btn{padding:11px 2px; font-size:0.79rem;}
 
   /* ============ INSIGHTS TAB ============ */
   .isubnav{display:flex; overflow-x:auto; gap:6px; padding-bottom:6px; margin-bottom:14px;}
-  .isubnav button{flex-shrink:0; padding:9px 14px; border-radius:10px; border:1px solid var(--border);
-    background:var(--surface); color:var(--text-dim); font-weight:700; font-size:0.78rem; cursor:pointer; white-space:nowrap;}
+  .isubnav button{flex-shrink:0; padding:9px 14px; border-radius:999px; border:1px solid var(--border);
+    background:var(--surface); color:var(--text-dim); font-weight:700; font-size:0.78rem; cursor:pointer; white-space:nowrap;
+    transition:background .15s, color .15s, border-color .15s;}
   .isubnav button.active{background:var(--gold); color:var(--gold-ink); border-color:var(--gold);}
   .isubview{display:none;}
-  .isubview.active{display:block;}
+  .isubview.active{display:block; animation:tabIn .28s cubic-bezier(.2,.8,.2,1);}
 
   .metric-card{background:var(--surface); border:1px solid var(--border); border-radius:13px; padding:14px; margin-bottom:10px;}
   .metric-title{font-size:0.8rem; font-weight:700; color:var(--text-dim); margin-bottom:10px;}
@@ -375,12 +446,6 @@
       <button class="theme-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle theme">☀</button>
     </div>
     <p>your games, move by move</p>
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="games" onclick="switchTab('games')">Games</button>
-      <button class="tab-btn" data-tab="stats" onclick="switchTab('stats')">Stats</button>
-      <button class="tab-btn" data-tab="analysis" onclick="switchTab('analysis')">Analysis</button>
-      <button class="tab-btn" data-tab="insights" onclick="switchTab('insights')">Insights</button>
-    </div>
   </header>
 
   <!-- GAMES TAB -->
@@ -391,7 +456,7 @@
     </div>
 
     <div class="profile-card" id="profile-card" style="display:none;">
-      <div class="profile-avatar" id="profile-avatar">–</div>
+      <div class="avatar-ring"><div class="profile-avatar" id="profile-avatar">–</div></div>
       <div class="profile-info">
         <div class="profile-name"><span id="profile-name">–</span><span class="crown">♛</span></div>
         <div class="profile-meta" id="profile-meta">Sync to load your games</div>
@@ -407,6 +472,10 @@
       <button class="btn-ghost" disabled>⚑ Filters</button>
     </div>
     <div class="sync-status" id="sync-status"></div>
+    <div class="pill-row">
+      <button class="pill-badge gold" id="install-pill">⤓ Install app</button>
+      <span class="pill-badge offline" id="offline-pill">⚠ Offline · showing cached games</span>
+    </div>
 
     <div id="brilliant-section" style="display:none;">
       <div class="section-title">✨ Your brilliant moves</div>
@@ -591,6 +660,23 @@
 
 </div>
 
+<div class="toast-stack" id="toast-stack"></div>
+
+<nav class="bottom-nav">
+  <button class="bn-btn active" data-tab="games" onclick="switchTab('games')">
+    <span class="bn-icon-wrap"><span class="bn-icon">♟</span></span><span class="bn-label">Games</span>
+  </button>
+  <button class="bn-btn" data-tab="stats" onclick="switchTab('stats')">
+    <span class="bn-icon-wrap"><span class="bn-icon">▦</span></span><span class="bn-label">Stats</span>
+  </button>
+  <button class="bn-btn" data-tab="analysis" onclick="switchTab('analysis')">
+    <span class="bn-icon-wrap"><span class="bn-icon">♞</span></span><span class="bn-label">Analysis</span>
+  </button>
+  <button class="bn-btn" data-tab="insights" onclick="switchTab('insights')">
+    <span class="bn-icon-wrap"><span class="bn-icon">✦</span></span><span class="bn-label">Insights</span>
+  </button>
+</nav>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
@@ -673,9 +759,10 @@ const board = Chessboard('board', boardConfig);
 /* ============ TABS ============ */
 function switchTab(tabId) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.bn-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(tabId).classList.add('active');
-  document.querySelector(`.tab-btn[data-tab="${tabId}"]`).classList.add('active');
+  document.querySelector(`.bn-btn[data-tab="${tabId}"]`).classList.add('active');
+  window.scrollTo({ top: 0, behavior: 'auto' });
   if (tabId === 'analysis') setTimeout(() => board.resize(), 0);
 }
 function switchSub(subId) {
@@ -700,29 +787,120 @@ document.querySelectorAll('#color-segmented button').forEach(btn => {
   });
 });
 
-async function syncGames() {
-  const btn = document.getElementById('load-btn');
-  const status = document.getElementById('sync-status');
-  const dbUrl = document.getElementById('db-url').value;
-  username = document.getElementById('username').value;
-  btn.disabled = true; btn.innerText = 'Syncing…';
-  status.innerText = '';
-  try {
-    const res = await fetch(`${dbUrl}/users/${username}/games.json`);
-    if (!res.ok) throw new Error('Request failed');
-    const data = await res.json();
-    if (!data) { status.innerText = 'No games found for this account.'; gamesData = {}; }
-    else { gamesData = data; status.innerText = `Synced ${Object.keys(data).length} games · ${new Date().toLocaleTimeString()}`; }
-  } catch (e) {
-    status.innerText = "Couldn't reach the database. Check your connection.";
-  }
-  btn.disabled = false; btn.innerText = '+ Import more games';
+/* ============ LOCAL CACHE (instant load + incremental sync) ============
+   The old sync re-downloaded the ENTIRE games.json blob — every move, every
+   FEN, for every game ever synced — on every single tap. That payload only
+   grows over time, so syncs got slower the more you played. Now:
+   1. Cached games render instantly on open (no network wait).
+   2. A sync only asks Firebase for the *ids* it doesn't already have
+      (a tiny ?shallow=true request), then fetches just those new games. */
+const CACHE_KEY = 'endgame-cache-v1';
+const LAST_SYNC_KEY = 'endgame-last-sync-v1';
+let isSyncing = false;
+let hasSyncedOnce = false;
+
+function loadCachedGames() {
+  try { return JSON.parse(localStorage.getItem(CACHE_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+function saveCachedGames(data) {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); }
+  catch (e) { /* storage full or blocked — sync still works, just won't persist */ }
+}
+
+function renderAll() {
   renderProfile();
   renderGameGroups();
   renderBrilliantCarousel();
   renderStats();
   computeAndRenderInsights();
 }
+
+function setSyncStatus(html) {
+  document.getElementById('sync-status').innerHTML = html;
+}
+function dot(cls) { return `<span class="sync-dot ${cls}"></span>`; }
+
+async function syncGames(opts = {}) {
+  const background = opts.background === true;
+  if (isSyncing) return;
+  isSyncing = true;
+  if (Object.keys(gamesData).length === 0) renderGameGroups(); // paint skeleton immediately on a cold first load
+
+  const btn = document.getElementById('load-btn');
+  const dbUrl = document.getElementById('db-url').value;
+  username = document.getElementById('username').value;
+  const hadCachedBefore = Object.keys(gamesData).length > 0;
+
+  if (!background) { btn.disabled = true; btn.innerText = 'Syncing…'; }
+  setSyncStatus(`${dot('busy')} Checking for new games…`);
+
+  try {
+    // Step 1 — tiny request: just which game ids exist server-side, no move data.
+    const shallowRes = await fetch(`${dbUrl}/users/${username}/games.json?shallow=true`);
+    if (!shallowRes.ok) throw new Error('Request failed');
+    const shallow = await shallowRes.json();
+    const remoteIds = shallow ? Object.keys(shallow) : [];
+    const haveIds = new Set(Object.keys(gamesData));
+    const newIds = remoteIds.filter(id => !haveIds.has(id));
+
+    if (newIds.length > 0) {
+      setSyncStatus(`${dot('busy')} Pulling ${newIds.length} new game${newIds.length > 1 ? 's' : ''}…`);
+      const CHUNK = 8; // fetch new games in small parallel batches, not all at once
+      for (let i = 0; i < newIds.length; i += CHUNK) {
+        const chunk = newIds.slice(i, i + CHUNK);
+        const results = await Promise.all(chunk.map(id =>
+          fetch(`${dbUrl}/users/${username}/games/${id}.json`).then(r => r.ok ? r.json() : null).catch(() => null)
+        ));
+        chunk.forEach((id, idx) => { if (results[idx]) gamesData[id] = results[idx]; });
+      }
+      saveCachedGames(gamesData);
+    }
+
+    const now = new Date().toLocaleTimeString();
+    localStorage.setItem(LAST_SYNC_KEY, now);
+    const total = Object.keys(gamesData).length;
+    setSyncStatus(newIds.length > 0
+      ? `${dot('live')} Synced ${newIds.length} new · ${total} total · ${now}`
+      : `${dot('live')} Up to date · ${total} games · ${now}`);
+    hideOfflinePill();
+    // A quiet toast only for a genuine delta on top of an existing library —
+    // the first-ever cold sync already gets its own feedback via the game list appearing.
+    if (newIds.length > 0 && hadCachedBefore) {
+      showToast(`✨ ${newIds.length} new game${newIds.length > 1 ? 's' : ''} synced`);
+    }
+  } catch (e) {
+    const total = Object.keys(gamesData).length;
+    setSyncStatus(total
+      ? `${dot('')} Offline — showing ${total} cached games`
+      : `${dot('')} Couldn't reach the database. Check your connection.`);
+    showOfflinePill();
+  }
+
+  if (!background) { btn.disabled = false; btn.innerText = '+ Import more games'; }
+  isSyncing = false;
+  hasSyncedOnce = true;
+  renderAll();
+}
+
+/* ============ TOAST ============ */
+function showToast(message, duration = 2600) {
+  const stack = document.getElementById('toast-stack');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = message;
+  stack.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 250);
+  }, duration);
+}
+
+function showOfflinePill() { document.getElementById('offline-pill').style.display = 'inline-flex'; }
+function hideOfflinePill() { document.getElementById('offline-pill').style.display = 'none'; }
+window.addEventListener('offline', showOfflinePill);
+window.addEventListener('online', () => { hideOfflinePill(); syncGames({ background: true }); });
 
 function getMyColor(meta) {
   if (!meta) return null;
@@ -845,7 +1023,17 @@ function renderGameGroups() {
   const emptyEl = document.getElementById('games-empty');
   wrap.innerHTML = '';
   const ids = Object.keys(gamesData).filter(id => gamesData[id] && gamesData[id].moves).reverse();
-  if (ids.length === 0) { emptyEl.style.display = 'block'; renderStreak(); return; }
+  if (ids.length === 0) {
+    if (isSyncing && !hasSyncedOnce) {
+      // First-ever load, nothing cached yet — skeleton cards beat a blank screen.
+      emptyEl.style.display = 'none';
+      wrap.innerHTML = Array(4).fill('<div class="skel skel-card"></div>').join('');
+    } else {
+      emptyEl.style.display = 'block';
+    }
+    renderStreak();
+    return;
+  }
   emptyEl.style.display = 'none';
   renderStreak();
 
@@ -1874,10 +2062,7 @@ function computeInsightsData(){
         const before = scanHanging(m.fen_before, moverColor);
         const after = scanHanging(fenAfter, moverColor);
         if (isMe) {
-          // Only count it as a real hang if the engine already flagged THIS move as
-          // a loss (Inaccuracy/Mistake/Miss/Blunder). A piece that's geometrically
-          // "attacked more than defended" but doesn't cost eval — because recapture
-          // loses material back, or it's actually winning for me — isn't a real hang.
+          
           if (BAD_FOR_MOVER.has(m.classification)) {
             Object.keys(after).forEach(t => {
               const delta = Math.max(0, (after[t]||0) - (before[t]||0));
@@ -1916,10 +2101,7 @@ function computeInsightsData(){
                   data.hangingOppFoundGames[t].push({ gameId:id, ply:i+1, opp:oppName, date:g.date });
                   capturedType = null;
                 } else if (bestWasCapture && !iPlayedBest && nextMove && BAD_FOR_MOVER.has(nextMove.classification)) {
-                  // Only a real miss if the engine's best move WAS to take it, I didn't
-                  // take the engine's best move, AND that actually cost me evaluation —
-                  // e.g. I had something even better, or the "free" piece wasn't really free,
-                  // so declining it wasn't a mistake.
+                  
                   data.hangingOppMissed[t] = (data.hangingOppMissed[t]||0) + 1;
                   data.hangingOppMissedGames[t].push({ gameId:id, ply:i+1, opp:oppName, date:g.date });
                 }
@@ -1929,9 +2111,7 @@ function computeInsightsData(){
         }
 
         if (isMe && pieceType && pieceType !== 'k' && vm && !BAD_FOR_MOVER.has(m.classification)) {
-          // Only count a fork if the move that created it didn't cost eval — a piece
-          // that geometrically attacks two things but drops evaluation (e.g. it just
-          // gets captured itself) isn't a landed fork, it's a blunder that looks like one.
+          
           try {
             const parts = fenAfter.split(' ');
             parts[1] = moverColor;
@@ -2325,6 +2505,63 @@ if (opSegEl) {
   });
 }
 
+/* ============ HEADER — frosted-glass blur once the page scrolls ============ */
+(function () {
+  const headerEl = document.querySelector('header');
+  function onHeaderScroll() {
+    if (window.scrollY > 6) headerEl.classList.add('scrolled');
+    else headerEl.classList.remove('scrolled');
+  }
+  window.addEventListener('scroll', onHeaderScroll, { passive: true });
+  onHeaderScroll();
+})();
+
+/* ============ APP INIT — instant cache paint, then quiet background sync ============ */
+(function initApp() {
+  username = document.getElementById('username').value;
+  gamesData = loadCachedGames();
+  const cachedCount = Object.keys(gamesData).length;
+  const lastSync = localStorage.getItem(LAST_SYNC_KEY);
+
+  if (cachedCount > 0) {
+    renderAll();
+    setSyncStatus(lastSync
+      ? `${dot('live')} ${cachedCount} games · last synced ${lastSync}`
+      : `${dot('live')} ${cachedCount} games loaded`);
+  } else {
+    setSyncStatus(`${dot('busy')} Loading your games…`);
+  }
+  if (!navigator.onLine) showOfflinePill();
+
+  // Quiet incremental sync in the background — only pulls what's new,
+  // so this is fast even with a large game history.
+  syncGames({ background: true });
+})();
+
+/* ============ PWA — install prompt ============ */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  document.getElementById('install-pill').style.display = 'inline-flex';
+});
+document.getElementById('install-pill').addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  document.getElementById('install-pill').style.display = 'none';
+});
+window.addEventListener('appinstalled', () => {
+  document.getElementById('install-pill').style.display = 'none';
+});
+
+/* ============ PWA — service worker (offline shell + faster repeat loads) ============ */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').catch(() => { /* non-fatal */ });
+  });
+}
 </script>
 </body>
 </html>
