@@ -22,9 +22,14 @@ users/{username}/games/{game_id} = {
 Required repo secrets (already set up per your message):
     FIREBASE_SERVICE_ACCOUNT   full service-account JSON, as a single secret
     FIREBASE_DB_URL            e.g. https://your-project-default-rtdb.firebaseio.com
-    CHESSCOM_USERNAME          your chess.com username
+    CHESSCOM_USERNAME          your chess.com username — used only to call the chess.com API
 
 Optional repo secrets / vars:
+    FIREBASE_USER_KEY          the Firebase path segment (users/{this}/games). Defaults to
+                                CHESSCOM_USERNAME if unset. Set this explicitly and leave it
+                                alone if you ever rename your chess.com account — chess.com
+                                usernames can change, but your Firebase history shouldn't have
+                                to move just because the account got renamed.
     STOCKFISH_PATH             defaults to "stockfish" (resolved on PATH by the workflow)
     ANALYSIS_DEPTH             defaults to 14
     SYNC_MONTHS                how many months of chess.com history to scan each run (default 1)
@@ -50,6 +55,13 @@ from firebase_admin import credentials, db
 # CONFIG — pulled from environment / repo secrets
 # ============================================================
 USERNAME = os.environ.get("CHESSCOM_USERNAME")
+# The Firebase path key is deliberately separate from the chess.com username.
+# chess.com lets you rename your account; if that happens, update CHESSCOM_USERNAME
+# to the new handle (so the API calls keep working) but leave FIREBASE_USER_KEY
+# pointing at whatever value your existing Firebase history was written under —
+# otherwise the app looks under a brand-new empty path and "loses" every game
+# that was already synced.
+FIREBASE_USER_KEY = os.environ.get("FIREBASE_USER_KEY", USERNAME)
 FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL")
 FIREBASE_SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "stockfish")
@@ -314,8 +326,8 @@ def main():
         sys.exit("Missing CHESSCOM_USERNAME secret.")
 
     init_firebase()
-    already_synced = existing_game_ids(USERNAME)
-    print(f"{len(already_synced)} games already in Firebase for {USERNAME}.")
+    already_synced = existing_game_ids(FIREBASE_USER_KEY)
+    print(f"{len(already_synced)} games already in Firebase for {FIREBASE_USER_KEY}.")
 
     raw_games = fetch_chesscom_pgns(USERNAME, SYNC_MONTHS)
     new_games = []
@@ -355,7 +367,7 @@ def main():
                 "date": date,
                 "moves": moves,
             }
-            upload_game(USERNAME, gid, game_obj)
+            upload_game(FIREBASE_USER_KEY, gid, game_obj)
             blunders = sum(1 for m in moves if m["classification"] == "Blunder")
             print(f"    -> uploaded: {len(moves)} moves, {blunders} blunders")
     finally:
