@@ -13,6 +13,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Endgame" />
 <link rel="icon" href="icons/icon-192.png" />
+<link rel="preconnect" href="https://chess-analyzer-36eb6-default-rtdb.firebaseio.com" />
+<link rel="dns-prefetch" href="https://chess-analyzer-36eb6-default-rtdb.firebaseio.com" />
 <link rel="apple-touch-icon" href="icons/icon-192.png" />
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css" />
@@ -32,14 +34,34 @@
     --board-light:#EAD8B4; --board-dark:#8C5E3D;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
+
+  /* ---- shared "elevated glass" treatment for every card-style surface ---- */
+  .profile-card, .game-card, .stat-box, .chart-card, .motif-box, .callout-card, .opening-row{
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.035),
+      0 1px 2px rgba(0,0,0,0.3),
+      0 12px 28px -14px rgba(0,0,0,0.55);
+  }
+  html[data-theme="colorful"] .profile-card, html[data-theme="colorful"] .game-card,
+  html[data-theme="colorful"] .stat-box, html[data-theme="colorful"] .chart-card,
+  html[data-theme="colorful"] .motif-box, html[data-theme="colorful"] .callout-card,
+  html[data-theme="colorful"] .opening-row{
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.5),
+      0 1px 2px rgba(120,80,20,0.08),
+      0 12px 26px -16px rgba(120,80,20,0.22);
+  }
   body{
-    background:
-      radial-gradient(1200px 400px at 50% -10%, rgba(201,162,39,0.07), transparent 60%),
-      var(--bg);
+    background:var(--bg);
     color:var(--text); font-family:'Inter',sans-serif;
     display:flex; justify-content:center; min-height:100vh; -webkit-tap-highlight-color:transparent;
   }
-  .container{width:100%; max-width:480px; display:flex; flex-direction:column; background:var(--bg);
+  .container{width:100%; max-width:480px; display:flex; flex-direction:column;
+    background:
+      radial-gradient(900px 500px at 8% -8%, rgba(201,162,39,0.08), transparent 55%),
+      radial-gradient(700px 480px at 100% 8%, rgba(47,180,201,0.05), transparent 55%),
+      radial-gradient(800px 600px at 15% 100%, rgba(201,162,39,0.045), transparent 60%),
+      var(--bg);
     padding-bottom:calc(84px + env(safe-area-inset-bottom)); min-height:100vh;}
 
   h1,h2,.serif{font-family:'Fraunces',serif;}
@@ -143,6 +165,12 @@
   .profile-name .crown{color:var(--gold); font-size:0.8rem;}
   .profile-meta{font-size:0.75rem; color:var(--text-dim); margin-top:1px;}
   .profile-chevron{color:var(--text-faint); font-size:0.9rem;}
+  .hero-stat{text-align:center; padding:6px 0 14px;}
+  .hero-num{font-family:'Fraunces',serif; font-weight:800; font-size:3.1rem; line-height:1; letter-spacing:-0.02em;
+    background:linear-gradient(180deg, var(--text) 15%, var(--gold-bright) 130%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; color:transparent;}
+  .hero-lbl{font-size:0.78rem; color:var(--text-dim); margin-top:2px; font-weight:600;}
+  .hero-lbl span{color:var(--text); font-weight:700;}
 
   /* ---- toast (bottom, sits above the bottom nav) ---- */
   .toast-stack{position:fixed; left:50%; transform:translateX(-50%); bottom:calc(78px + env(safe-area-inset-bottom));
@@ -359,7 +387,7 @@
     --win:#22B36B; --loss:#FF4757; --draw:#8C7CFF;
     --board-light:#FFE9C2; --board-dark:#FF9F5C;
   }
-  html[data-theme="colorful"] body{
+  html[data-theme="colorful"] .container{
     background:
       radial-gradient(1000px 380px at 12% -8%, rgba(255,154,84,0.22), transparent 60%),
       radial-gradient(900px 340px at 105% 0%, rgba(91,123,255,0.14), transparent 55%),
@@ -377,11 +405,28 @@
   .theme-btn:active{background:var(--surface-2);}
 
   /* ============ INSIGHTS TAB ============ */
-  .isubnav{display:flex; overflow-x:auto; gap:6px; padding-bottom:6px; margin-bottom:14px;}
-  .isubnav button{flex-shrink:0; padding:9px 14px; border-radius:999px; border:1px solid var(--border);
-    background:var(--surface); color:var(--text-dim); font-weight:700; font-size:0.78rem; cursor:pointer; white-space:nowrap;
-    transition:background .15s, color .15s, border-color .15s;}
-  .isubnav button.active{background:var(--gold); color:var(--gold-ink); border-color:var(--gold);}
+  /* ---- insight-nav: categorized collapsible sidebar, adapted to full-width mobile ---- */
+  .insight-nav{background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:6px; margin-bottom:16px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.035), 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.55);}
+  .in-group + .in-group{border-top:1px solid var(--border-soft); margin-top:2px; padding-top:2px;}
+  .in-group-header{width:100%; display:flex; align-items:center; gap:10px; padding:11px 10px; background:transparent;
+    border:none; border-radius:10px; cursor:pointer; text-align:left; transition:background .15s;}
+  .in-group-header:active{background:var(--surface-2);}
+  .in-gicon{font-size:1rem; width:20px; text-align:center; color:var(--gold);}
+  .in-gtitle{flex:1; font-weight:700; font-size:0.88rem; color:var(--text);}
+  .in-chevron{color:var(--text-faint); font-size:0.8rem; transition:transform .2s ease;}
+  .in-group-header.collapsed .in-chevron{transform:rotate(-90deg);}
+  .in-group-body{display:flex; flex-direction:column; overflow:hidden; max-height:400px; opacity:1;
+    transition:max-height .25s ease, opacity .2s ease;}
+  .in-group-body.collapsed{max-height:0; opacity:0;}
+  .in-item{display:flex; align-items:center; gap:10px; padding:9px 10px 9px 34px; background:transparent; border:none;
+    color:var(--text-dim); font-size:0.82rem; font-weight:600; cursor:pointer; border-radius:9px; text-align:left;
+    transition:background .15s, color .15s;}
+  .in-item:active{background:var(--surface-2);}
+  .in-item.active{background:var(--surface-3); color:var(--text);}
+  .in-iicon{font-size:0.85rem; color:var(--text-faint); width:16px; text-align:center; flex-shrink:0;}
+  .in-item.active .in-iicon{color:var(--gold);}
+
   .isubview{display:none;}
   .isubview.active{display:block; animation:tabIn .28s cubic-bezier(.2,.8,.2,1);}
 
@@ -462,6 +507,11 @@
         <div class="profile-meta" id="profile-meta">Sync to load your games</div>
       </div>
       <div class="profile-chevron">⌄</div>
+    </div>
+
+    <div class="hero-stat" id="hero-stat" style="display:none;">
+      <div class="hero-num" id="hero-winrate">0%</div>
+      <div class="hero-lbl">Win rate · <span id="hero-games-count">0</span> games synced</div>
     </div>
 
     <div class="streak-row" id="streak-row"></div>
@@ -677,9 +727,9 @@
   </button>
 </nav>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.4/jquery.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js" defer></script>
 
 <script>
 /* ============ COACH MASCOT ============ */
@@ -732,29 +782,37 @@ let myColor = null; // 'w' | 'b' | null
 let isSandboxMode = false;
 let qualityFilter = null;
 let colorScope = 'all'; // all | w | b
-const game = new Chess();
+let game = null; // instantiated in initChessWidgets(), once chess.js has actually loaded
 
 /* ============ BOARD ============ */
-const boardConfig = {
-  position: 'start',
-  draggable: true,
-  pieceTheme: PIECE_THEME,
-  onDragStart: (source) => {
-    if (!isSandboxMode) return false;
-    const moves = game.moves({ square: source, verbose: true });
-    if (moves.length === 0) return false;
-    highlightSquares(source, moves);
-  },
-  onDrop: (source, target) => {
-    removeHighlights();
-    const move = game.move({ from: source, to: target, promotion: 'q' });
-    if (move === null) return 'snapback';
-    board.position(game.fen());
-    clearArrows(); clearMoveBadge();
-    document.getElementById('status-desc').innerText = `Sandbox: ${move.san}`;
-  }
-};
-const board = Chessboard('board', boardConfig);
+let board = null; // instantiated in initChessWidgets(), once chessboard.js has actually loaded
+function initChessWidgets() {
+  game = new Chess();
+  const boardConfig = {
+    position: 'start',
+    draggable: true,
+    pieceTheme: PIECE_THEME,
+    onDragStart: (source) => {
+      if (!isSandboxMode) return false;
+      const moves = game.moves({ square: source, verbose: true });
+      if (moves.length === 0) return false;
+      highlightSquares(source, moves);
+    },
+    onDrop: (source, target) => {
+      removeHighlights();
+      const move = game.move({ from: source, to: target, promotion: 'q' });
+      if (move === null) return 'snapback';
+      board.position(game.fen());
+      clearArrows(); clearMoveBadge();
+      document.getElementById('status-desc').innerText = `Sandbox: ${move.san}`;
+    }
+  };
+  board = Chessboard('board', boardConfig);
+}
+// jQuery/chess.js/chessboard.js load with `defer`, so they're guaranteed ready by
+// DOMContentLoaded — this keeps ~150KB of board-widget script off the critical path
+// for the cache-first game list, which is what actually needs to feel instant.
+document.addEventListener('DOMContentLoaded', initChessWidgets);
 
 /* ============ TABS ============ */
 function switchTab(tabId) {
@@ -763,14 +821,14 @@ function switchTab(tabId) {
   document.getElementById(tabId).classList.add('active');
   document.querySelector(`.bn-btn[data-tab="${tabId}"]`).classList.add('active');
   window.scrollTo({ top: 0, behavior: 'auto' });
-  if (tabId === 'analysis') setTimeout(() => board.resize(), 0);
+  if (tabId === 'analysis') setTimeout(() => { if (board) board.resize(); }, 0);
 }
 function switchSub(subId) {
   document.querySelectorAll('.subview').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.subnav button').forEach(b => b.classList.remove('active'));
   document.getElementById('sub-' + subId).classList.add('active');
   document.querySelector(`.subnav button[data-sub="${subId}"]`).classList.add('active');
-  if (subId === 'board') setTimeout(() => board.resize(), 0);
+  if (subId === 'board') setTimeout(() => { if (board) board.resize(); }, 0);
   if (subId === 'insights') renderInsightsSub();
 }
 
@@ -883,7 +941,28 @@ async function syncGames(opts = {}) {
   renderAll();
 }
 
-/* ============ TOAST ============ */
+/* ============ ANIMATED COUNT-UP ============ */
+const PREFERS_REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function animateCountUp(el, target, opts = {}) {
+  if (!el) return;
+  const duration = opts.duration || 800;
+  const suffix = opts.suffix || '';
+  const decimals = opts.decimals || 0;
+  if (PREFERS_REDUCED_MOTION || target == null || isNaN(target)) {
+    el.textContent = (target == null || isNaN(target)) ? '–' : target.toFixed(decimals) + suffix;
+    return;
+  }
+  const startTime = performance.now();
+  function tick(now) {
+    const p = Math.min((now - startTime) / duration, 1);
+    const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic
+    el.textContent = (target * eased).toFixed(decimals) + suffix;
+    if (p < 1) requestAnimationFrame(tick);
+    else el.textContent = target.toFixed(decimals) + suffix;
+  }
+  requestAnimationFrame(tick);
+}
+
 function showToast(message, duration = 2600) {
   const stack = document.getElementById('toast-stack');
   const el = document.createElement('div');
@@ -949,12 +1028,18 @@ function renderMiniBoard(fen) {
 function renderProfile() {
   const ids = Object.keys(gamesData).filter(id => gamesData[id]);
   const card = document.getElementById('profile-card');
-  if (ids.length === 0) { card.style.display = 'none'; return; }
+  const hero = document.getElementById('hero-stat');
+  if (ids.length === 0) { card.style.display = 'none'; hero.style.display = 'none'; return; }
   card.style.display = 'flex';
   document.getElementById('profile-avatar').innerText = initials(username);
   document.getElementById('profile-name').innerText = username || 'Player';
   const wins = ids.filter(id => myResult(gamesData[id]) === 'win').length;
   document.getElementById('profile-meta').innerText = `${ids.length} games synced · ${wins} wins`;
+
+  hero.style.display = 'block';
+  const winRate = ids.length ? (wins / ids.length) * 100 : 0;
+  animateCountUp(document.getElementById('hero-winrate'), winRate, { suffix: '%', duration: 900 });
+  animateCountUp(document.getElementById('hero-games-count'), ids.length, { duration: 900 });
 }
 
 function renderStreak() {
@@ -1699,6 +1784,7 @@ function toggleTheme() {
    ============================  NEW: INSIGHTS TAB  =================================
    ================================================================================== */
 
+
 /* -- Build the Insights tab markup once, into the placeholder div -- */
 document.getElementById('insights-tab-wrap').outerHTML = `
 <div id="insights" class="tab-content">
@@ -1707,13 +1793,53 @@ document.getElementById('insights-tab-wrap').outerHTML = `
     <p>Sync your games from the Games tab<br>to unlock deeper insights.</p>
   </div>
   <div id="insights-body" style="display:none;">
-    <div class="isubnav">
-      <button class="active" data-isub="overview" onclick="switchInsightSub('overview')">Overview</button>
-      <button data-isub="openings" onclick="switchInsightSub('openings')">Openings</button>
-      <button data-isub="tactics" onclick="switchInsightSub('tactics')">Tactics</button>
-      <button data-isub="strategy" onclick="switchInsightSub('strategy')">Strategy</button>
-      <button data-isub="endgames" onclick="switchInsightSub('endgames')">Endgames</button>
-      <button data-isub="pieces" onclick="switchInsightSub('pieces')">Pieces</button>
+    <div class="insight-nav" id="insight-nav">
+      <div class="in-group" data-group="games">
+        <button class="in-group-header" onclick="toggleInsightGroup('games')">
+          <span class="in-gicon">▦</span><span class="in-gtitle">Games</span><span class="in-chevron">⌃</span>
+        </button>
+        <div class="in-group-body">
+          <button class="in-item active" data-isub="overview" onclick="switchInsightSub('overview')">
+            <span class="in-iicon">◎</span>Overview
+          </button>
+        </div>
+      </div>
+      <div class="in-group" data-group="openings">
+        <button class="in-group-header" onclick="toggleInsightGroup('openings')">
+          <span class="in-gicon">◆</span><span class="in-gtitle">Openings</span><span class="in-chevron">⌃</span>
+        </button>
+        <div class="in-group-body">
+          <button class="in-item" data-isub="openings" onclick="switchInsightSub('openings')">
+            <span class="in-iicon">📊</span>Performance &amp; mastery
+          </button>
+        </div>
+      </div>
+      <div class="in-group" data-group="tactics">
+        <button class="in-group-header" onclick="toggleInsightGroup('tactics')">
+          <span class="in-gicon">⚔</span><span class="in-gtitle">Tactics</span><span class="in-chevron">⌃</span>
+        </button>
+        <div class="in-group-body">
+          <button class="in-item" data-isub="tactics" onclick="switchInsightSub('tactics')">
+            <span class="in-iicon">⚡</span>Forks, pins, mates &amp; hangs
+          </button>
+        </div>
+      </div>
+      <div class="in-group" data-group="moves">
+        <button class="in-group-header" onclick="toggleInsightGroup('moves')">
+          <span class="in-gicon">♞</span><span class="in-gtitle">Moves</span><span class="in-chevron">⌃</span>
+        </button>
+        <div class="in-group-body">
+          <button class="in-item" data-isub="strategy" onclick="switchInsightSub('strategy')">
+            <span class="in-iicon">♜</span>Strategy
+          </button>
+          <button class="in-item" data-isub="endgames" onclick="switchInsightSub('endgames')">
+            <span class="in-iicon">♚</span>Endgames
+          </button>
+          <button class="in-item" data-isub="pieces" onclick="switchInsightSub('pieces')">
+            <span class="in-iicon">♗</span>Pieces
+          </button>
+        </div>
+      </div>
     </div>
 
     <div id="isub-overview" class="isubview active">
@@ -1798,7 +1924,7 @@ document.getElementById('insights-tab-wrap').outerHTML = `
 </div>`;
 
 /* -- Piece metadata / colors -- */
-const PIECE_META = {
+    const PIECE_META = {
   p:{name:'Pawn',   icon:'♟'},
   n:{name:'Knight', icon:'♞'},
   b:{name:'Bishop', icon:'♝'},
@@ -2062,7 +2188,10 @@ function computeInsightsData(){
         const before = scanHanging(m.fen_before, moverColor);
         const after = scanHanging(fenAfter, moverColor);
         if (isMe) {
-          
+          // Only count it as a real hang if the engine already flagged THIS move as
+          // a loss (Inaccuracy/Mistake/Miss/Blunder). A piece that's geometrically
+          // "attacked more than defended" but doesn't cost eval — because recapture
+          // loses material back, or it's actually winning for me — isn't a real hang.
           if (BAD_FOR_MOVER.has(m.classification)) {
             Object.keys(after).forEach(t => {
               const delta = Math.max(0, (after[t]||0) - (before[t]||0));
@@ -2101,7 +2230,10 @@ function computeInsightsData(){
                   data.hangingOppFoundGames[t].push({ gameId:id, ply:i+1, opp:oppName, date:g.date });
                   capturedType = null;
                 } else if (bestWasCapture && !iPlayedBest && nextMove && BAD_FOR_MOVER.has(nextMove.classification)) {
-                  
+                  // Only a real miss if the engine's best move WAS to take it, I didn't
+                  // take the engine's best move, AND that actually cost me evaluation —
+                  // e.g. I had something even better, or the "free" piece wasn't really free,
+                  // so declining it wasn't a mistake.
                   data.hangingOppMissed[t] = (data.hangingOppMissed[t]||0) + 1;
                   data.hangingOppMissedGames[t].push({ gameId:id, ply:i+1, opp:oppName, date:g.date });
                 }
@@ -2109,9 +2241,10 @@ function computeInsightsData(){
             });
           }
         }
-
         if (isMe && pieceType && pieceType !== 'k' && vm && !BAD_FOR_MOVER.has(m.classification)) {
-          
+          // Only count a fork if the move that created it didn't cost eval — a piece
+          // that geometrically attacks two things but drops evaluation (e.g. it just
+          // gets captured itself) isn't a landed fork, it's a blunder that looks like one.
           try {
             const parts = fenAfter.split(' ');
             parts[1] = moverColor;
@@ -2157,12 +2290,29 @@ function computeAndRenderInsights(){
 
 function switchInsightSub(id){
   document.querySelectorAll('.isubview').forEach(v => v.classList.remove('active'));
-  document.querySelectorAll('.isubnav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.in-item').forEach(b => b.classList.remove('active'));
   const view = document.getElementById('isub-' + id);
-  const btn = document.querySelector(`.isubnav button[data-isub="${id}"]`);
+  const btn = document.querySelector(`.in-item[data-isub="${id}"]`);
   if (view) view.classList.add('active');
-  if (btn) btn.classList.add('active');
+  if (btn) {
+    btn.classList.add('active');
+    // make sure the item's own group is visibly expanded when it's selected
+    const group = btn.closest('.in-group');
+    if (group) {
+      group.querySelector('.in-group-header').classList.remove('collapsed');
+      group.querySelector('.in-group-body').classList.remove('collapsed');
+    }
+  }
   clearTacDrilldown();
+}
+
+function toggleInsightGroup(name){
+  const group = document.querySelector(`.in-group[data-group="${name}"]`);
+  if (!group) return;
+  const header = group.querySelector('.in-group-header');
+  const body = group.querySelector('.in-group-body');
+  const collapsed = body.classList.toggle('collapsed');
+  header.classList.toggle('collapsed', collapsed);
 }
 
 /* -- Reusable render bits -- */
@@ -2271,15 +2421,16 @@ function showMatesDrilldown(){
 
 /* -- OVERVIEW -- */
 function renderOverviewSub(d){
-  document.getElementById('ov-highest').innerText = d.highestRating != null ? d.highestRating : '–';
+  const highest = d.highestRating != null ? d.highestRating : null;
+  animateCountUp(document.getElementById('ov-highest'), highest, { duration: 900 });
   const cur = d.ratingSeries.length ? d.ratingSeries[d.ratingSeries.length - 1].rating : null;
-  document.getElementById('ov-current').innerText = cur != null ? cur : '–';
-  document.getElementById('ov-games').innerText = d.games;
+  animateCountUp(document.getElementById('ov-current'), cur, { duration: 900 });
+  animateCountUp(document.getElementById('ov-games'), d.games, { duration: 900 });
   const w = d.byColor.w.wins + d.byColor.b.wins;
   const l = d.byColor.w.losses + d.byColor.b.losses;
   const dr = d.byColor.w.draws + d.byColor.b.draws;
   const total = w + l + dr;
-  document.getElementById('ov-winrate').innerText = total ? Math.round(w/total*100) + '%' : '–';
+  animateCountUp(document.getElementById('ov-winrate'), total ? Math.round(w/total*100) : null, { suffix: '%', duration: 900 });
   renderRatingSvg(d.ratingSeries);
   renderPhaseResults(d.resultsByPhase);
 }
