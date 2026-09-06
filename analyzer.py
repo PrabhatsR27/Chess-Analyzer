@@ -317,13 +317,20 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         if not vals or not sum(wts):
             accuracy[color] = None
         else:
-            # Weighted root-mean-square: squaring each move's accuracy before
-            # averaging means one catastrophic blunder drags the aggregate
-            # down far more than an equivalent number of small inaccuracies
-            # would, which is closer to how tournament-grade tools score games.
-            numerator = sum(w * (v ** 2) for w, v in zip(wts, vals))
+            # RMS is mathematically >= the arithmetic mean (QM-AM inequality),
+            # so taking the RMS of the raw accuracy values would actually
+            # *inflate* the score relative to a plain average — the opposite
+            # of what we want. Instead we take the weighted RMS of each
+            # move's *deficiency* (100 - accuracy): squaring makes large
+            # deficiencies (blunders) dominate the average far more than a
+            # plain mean would, and subtracting that inflated average
+            # deficiency from 100 is what actually drags the final score
+            # down hard when there's a bad blunder mixed in with good moves.
+            deficiencies = [100.0 - v for v in vals]
+            numerator = sum(w * (d ** 2) for w, d in zip(wts, deficiencies))
             denominator = sum(wts)
-            rms_accuracy = math.sqrt(numerator / denominator)
+            rms_deficiency = math.sqrt(numerator / denominator)
+            rms_accuracy = 100.0 - rms_deficiency
             accuracy[color] = round(max(0.0, min(100.0, rms_accuracy)), 1)
 
     return moves_out, accuracy
