@@ -18,7 +18,7 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
 
     env:
       CHESSCOM_USERNAME: ${{ secrets.CHESSCOM_USERNAME }}
