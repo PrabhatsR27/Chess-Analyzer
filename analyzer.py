@@ -31,7 +31,11 @@ Optional repo secrets / vars:
                                 usernames can change, but your Firebase history shouldn't have
                                 to move just because the account got renamed.
     STOCKFISH_PATH             defaults to "stockfish" (resolved on PATH by the workflow)
-    ANALYSIS_DEPTH             defaults to 14
+    ANALYSIS_DEPTH             defaults to 20
+    ANALYSIS_TIME_LIMIT        per-position time cap in seconds, defaults to 5.0 (safety net
+                                alongside depth so one unusually complex position can't blow
+                                up a run)
+    ANALYSIS_MULTIPV           how many engine lines to compute per position, defaults to 3
     SYNC_MONTHS                how many months of chess.com history to scan each run (default 1)
     MAX_GAMES_PER_RUN          cap so a single run can't blow past the Actions time limit (default 20)
 """
@@ -65,7 +69,13 @@ FIREBASE_USER_KEY = os.environ.get("FIREBASE_USER_KEY", USERNAME)
 FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL")
 FIREBASE_SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "stockfish")
-ANALYSIS_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "14"))
+ANALYSIS_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "20"))
+# Safety net alongside depth: if a position is unusually complex and Stockfish
+# is still chewing on it, cut it off after this many seconds so one hard
+# position can't blow up the whole run. Only matters on days with more volume
+# than usual — normal games finish well under this per position.
+ANALYSIS_TIME_LIMIT = float(os.environ.get("ANALYSIS_TIME_LIMIT", "5.0"))
+ANALYSIS_MULTIPV = int(os.environ.get("ANALYSIS_MULTIPV", "3"))
 SYNC_MONTHS = int(os.environ.get("SYNC_MONTHS", "1"))
 MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
 # Set to "true" for a one-off backfill run that re-analyzes and overwrites
@@ -122,9 +132,10 @@ def score_to_cp(score: "chess.engine.PovScore", pov_color: bool) -> int:
     return s.score()
 
 
-def analyze_position(engine, board, depth, multipv=2):
+def analyze_position(engine, board, depth, multipv=2, time_limit=None):
     """Return engine lines (best first): [{'move', 'san', 'cp'}], cp from side-to-move's perspective."""
-    info = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=multipv)
+    limit = chess.engine.Limit(depth=depth, time=time_limit) if time_limit else chess.engine.Limit(depth=depth)
+    info = engine.analyse(board, limit, multipv=multipv)
     if isinstance(info, dict):
         info = [info]
     lines = []
@@ -236,7 +247,7 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         fen_before = board.fen()
         san_played = board.san(move)
 
-        lines = analyze_position(engine, board, depth, multipv=2)
+        lines = analyze_position(engine, board, depth, multipv=ANALYSIS_MULTIPV, time_limit=ANALYSIS_TIME_LIMIT)
         best_line = lines[0] if lines else {"move": move, "san": san_played, "cp": 0}
         second_cp = lines[1]["cp"] if len(lines) > 1 else best_line["cp"]
         is_best = (move == best_line["move"])
@@ -246,7 +257,8 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         best_cp_mover = best_line["cp"]
 
         board.push(move)
-        after_score = engine.analyse(board, chess.engine.Limit(depth=depth))["score"]
+        after_limit = chess.engine.Limit(depth=depth, time=ANALYSIS_TIME_LIMIT)
+        after_score = engine.analyse(board, after_limit)["score"]
         played_cp_mover = score_to_cp(after_score, mover_color)
         had_only_good_move = (best_line["cp"] - second_cp) >= GREAT_GAP
 
