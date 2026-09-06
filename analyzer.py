@@ -19,25 +19,34 @@ users/{username}/games/{game_id} = {
     ]
 }
 
-Required repo secrets (already set up per your message):
+Required repo secrets:
     FIREBASE_SERVICE_ACCOUNT   full service-account JSON, as a single secret
     FIREBASE_DB_URL            e.g. https://your-project-default-rtdb.firebaseio.com
-    CHESSCOM_USERNAME          your chess.com username — used only to call the chess.com API
+    CHESSCOM_ACCOUNTS          comma-separated list of accounts to sync, each either
+                                "chesscom_username" (Firebase key = same username) or
+                                "chesscom_username:firebase_key" (use a different Firebase
+                                path, e.g. after a chess.com rename).
+                                Example: CHESSCOM_ACCOUNTS=prabhat123,friend_handle:friend_key
+                                For a single account you can instead set the legacy
+                                CHESSCOM_USERNAME (+ optional FIREBASE_USER_KEY) secrets.
 
 Optional repo secrets / vars:
-    FIREBASE_USER_KEY          the Firebase path segment (users/{this}/games). Defaults to
-                                CHESSCOM_USERNAME if unset. Set this explicitly and leave it
-                                alone if you ever rename your chess.com account — chess.com
-                                usernames can change, but your Firebase history shouldn't have
-                                to move just because the account got renamed.
     STOCKFISH_PATH             defaults to "stockfish" (resolved on PATH by the workflow)
     ANALYSIS_DEPTH             defaults to 20
     ANALYSIS_TIME_LIMIT        per-position time cap in seconds, defaults to 5.0 (safety net
                                 alongside depth so one unusually complex position can't blow
                                 up a run)
     ANALYSIS_MULTIPV           how many engine lines to compute per position, defaults to 3
-    SYNC_MONTHS                how many months of chess.com history to scan each run (default 1)
-    MAX_GAMES_PER_RUN          cap so a single run can't blow past the Actions time limit (default 20)
+    SYNC_MONTHS                how many months of chess.com history to scan each run for an
+                                account that already has games in Firebase (default 1)
+    MAX_GAMES_PER_RUN          cap so a single run can't blow past the Actions time limit,
+                                applies per account (default 10)
+    INITIAL_BACKFILL_GAMES     the very first time an account has zero games in Firebase,
+                                back-fill just this many of its most recent games instead of
+                                a full SYNC_MONTHS scan (default 10). Every later run for that
+                                account is a normal incremental sync.
+    INITIAL_BACKFILL_MAX_MONTHS  safety cap on how far back to look while hunting for those
+                                games, for accounts with little history (default 24)
 """
 
 import io
@@ -58,14 +67,34 @@ from firebase_admin import credentials, db
 # ============================================================
 # CONFIG — pulled from environment / repo secrets
 # ============================================================
-USERNAME = os.environ.get("CHESSCOM_USERNAME")
-# The Firebase path key is deliberately separate from the chess.com username.
-# chess.com lets you rename your account; if that happens, update CHESSCOM_USERNAME
-# to the new handle (so the API calls keep working) but leave FIREBASE_USER_KEY
-# pointing at whatever value your existing Firebase history was written under —
-# otherwise the app looks under a brand-new empty path and "loses" every game
-# that was already synced.
-FIREBASE_USER_KEY = os.environ.get("FIREBASE_USER_KEY", USERNAME)
+# Multi-account support: set CHESSCOM_ACCOUNTS to a comma-separated list.
+# Each entry is either just a chess.com username (Firebase key defaults to
+# the same username) or "chesscom_username:firebase_key" if you want the
+# Firebase path to differ (e.g. after a chess.com rename).
+#   CHESSCOM_ACCOUNTS=prabhat123,friend_handle:friend_firebase_key
+# If CHESSCOM_ACCOUNTS is unset, falls back to the single-account
+# CHESSCOM_USERNAME / FIREBASE_USER_KEY pair for backward compatibility.
+def _parse_accounts():
+    raw = os.environ.get("CHESSCOM_ACCOUNTS", "").strip()
+    if raw:
+        accounts = []
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" in entry:
+                cc_user, fb_key = entry.split(":", 1)
+            else:
+                cc_user, fb_key = entry, entry
+            accounts.append((cc_user.strip(), fb_key.strip()))
+        return accounts
+    single_user = os.environ.get("CHESSCOM_USERNAME")
+    if single_user:
+        fb_key = os.environ.get("FIREBASE_USER_KEY", single_user)
+        return [(single_user, fb_key)]
+    return []
+
+ACCOUNTS = _parse_accounts()
 FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL")
 FIREBASE_SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "stockfish")
@@ -77,11 +106,15 @@ ANALYSIS_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "20"))
 ANALYSIS_TIME_LIMIT = float(os.environ.get("ANALYSIS_TIME_LIMIT", "5.0"))
 ANALYSIS_MULTIPV = int(os.environ.get("ANALYSIS_MULTIPV", "3"))
 SYNC_MONTHS = int(os.environ.get("SYNC_MONTHS", "1"))
-MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
-# Set to "true" for a one-off backfill run that re-analyzes and overwrites
-# games already in Firebase (e.g. after changing the accuracy formula).
-# Leave unset/false for normal 3-hourly incremental syncs.
-FORCE_REANALYZE = os.environ.get("FORCE_REANALYZE", "false").lower() == "true"
+MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "10"))
+# The very first time an account has zero games in Firebase, we backfill
+# just its N most recent games (regardless of how many months back that
+# spans) instead of every game in SYNC_MONTHS. After that first run, the
+# account is no longer "new" and goes back to normal incremental syncing.
+INITIAL_BACKFILL_GAMES = int(os.environ.get("INITIAL_BACKFILL_GAMES", "10"))
+# Safety cap on how many months to look back while hunting for those N
+# games, in case a brand-new account has very few games ever played.
+INITIAL_BACKFILL_MAX_MONTHS = int(os.environ.get("INITIAL_BACKFILL_MAX_MONTHS", "24"))
 MATE_SCORE_CP = 10000  # how mate scores are encoded for the app's eval bar
 
 # Classification thresholds, in centipawn loss (how much worse the played
@@ -349,7 +382,7 @@ def fetch_chesscom_pgns(username, months=1):
             data = resp.json()
             for g in data.get("games", []):
                 if "pgn" in g:
-                    games.append((g.get("url", g.get("uuid", "")), g["pgn"]))
+                    games.append((g.get("url", g.get("uuid", "")), g["pgn"], g.get("end_time", 0)))
         month -= 1
         if month == 0:
             month = 12
@@ -357,71 +390,146 @@ def fetch_chesscom_pgns(username, months=1):
     return games
 
 
+def fetch_recent_chesscom_pgns(username, min_games, max_months_lookback=24):
+    """Walk monthly archives backward from the current month until at least
+    min_games have been collected (or max_months_lookback is hit — a safety
+    cap for accounts with little or no history), then return just the
+    min_games most recent ones, newest first."""
+    games = []
+    now = datetime.utcnow()
+    year, month = now.year, now.month
+    months_checked = 0
+    while len(games) < min_games and months_checked < max_months_lookback:
+        url = f"https://api.chess.com/pub/player/{username}/games/{year:04d}/{month:02d}"
+        resp = requests.get(url, headers={"User-Agent": "endgame-analyzer/1.0 (+github actions)"})
+        if resp.ok:
+            data = resp.json()
+            for g in data.get("games", []):
+                if "pgn" in g:
+                    games.append((g.get("url", g.get("uuid", "")), g["pgn"], g.get("end_time", 0)))
+        months_checked += 1
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    games.sort(key=lambda g: g[2], reverse=True)  # newest first
+    return games[:min_games]
+
+
 def game_id_from_url(url_or_id):
     slug = re.sub(r"[^a-zA-Z0-9_-]", "_", url_or_id)
     return slug[-40:] if slug else "game"
 
 
+def classify_time_control(time_control):
+    """Map a PGN TimeControl header (e.g. "600", "180+2", "1/86400") to the
+    same bullet/blitz/rapid/daily buckets chess.com itself uses, so the app's
+    filter matches what players expect. Estimates total game length as
+    base_seconds + 40 * increment (a standard 40-move estimate), matching
+    how chess.com and lichess both classify a control's speed."""
+    if not time_control:
+        return None
+    time_control = time_control.strip()
+    if "/" in time_control:  # correspondence/daily format, e.g. "1/86400"
+        return "daily"
+    parts = time_control.split("+")
+    try:
+        base = int(parts[0])
+    except (ValueError, IndexError):
+        return None
+    increment = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    estimated_total = base + 40 * increment
+    if estimated_total < 180:
+        return "bullet"
+    if estimated_total < 600:
+        return "blitz"
+    if estimated_total < 1800:
+        return "rapid"
+    return "classical"
+
+
 # ============================================================
 # MAIN
 # ============================================================
-def main():
-    if not USERNAME:
-        sys.exit("Missing CHESSCOM_USERNAME secret.")
+def sync_account(engine, chesscom_username, firebase_key):
+    print(f"\n=== {chesscom_username} (Firebase key: {firebase_key}) ===")
+    already_synced = existing_game_ids(firebase_key)
+    print(f"{len(already_synced)} games already in Firebase for {firebase_key}.")
 
-    init_firebase()
-    already_synced = existing_game_ids(FIREBASE_USER_KEY)
-    print(f"{len(already_synced)} games already in Firebase for {FIREBASE_USER_KEY}.")
+    is_new_account = not already_synced
 
-    raw_games = fetch_chesscom_pgns(USERNAME, SYNC_MONTHS)
-    new_games = []
-    for game_id_raw, pgn_text in raw_games:
-        gid = game_id_from_url(game_id_raw)
-        if FORCE_REANALYZE or gid not in already_synced:
-            new_games.append((gid, pgn_text))
+    if is_new_account:
+        # First time this account has ever been synced: grab only its N most
+        # recent games (regardless of how many months that spans), not
+        # everything in SYNC_MONTHS. Every later run finds already_synced
+        # non-empty and falls into the normal incremental path below.
+        print(f"No games in Firebase yet for {firebase_key} — backfilling the "
+              f"{INITIAL_BACKFILL_GAMES} most recent games instead of a full SYNC_MONTHS scan.")
+        raw_games = fetch_recent_chesscom_pgns(
+            chesscom_username, INITIAL_BACKFILL_GAMES, INITIAL_BACKFILL_MAX_MONTHS
+        )
+        new_games = [(game_id_from_url(gid), pgn) for gid, pgn, _ in raw_games]
+    else:
+        raw_games = fetch_chesscom_pgns(chesscom_username, SYNC_MONTHS)
+        new_games = []
+        for game_id_raw, pgn_text, _end_time in raw_games:
+            gid = game_id_from_url(game_id_raw)
+            if gid not in already_synced:
+                new_games.append((gid, pgn_text))
+
+        new_games = new_games[-MAX_GAMES_PER_RUN:]  # newest first isn't guaranteed by the API, so just cap the batch
 
     if not new_games:
         print("No new games to analyze.")
         return
 
-    if FORCE_REANALYZE:
-        print(f"FORCE_REANALYZE is on — re-analyzing and overwriting {len(new_games)} game(s) "
-              f"found in the last {SYNC_MONTHS} month(s), regardless of what's already in Firebase.")
-    else:
-        new_games = new_games[-MAX_GAMES_PER_RUN:]  # newest first isn't guaranteed by the API, so just cap the batch
     print(f"Analyzing {len(new_games)} game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
 
+    for gid, pgn_text in new_games:
+        pgn_game = chess.pgn.read_game(io.StringIO(pgn_text))
+        if pgn_game is None:
+            continue
+        headers = pgn_game.headers
+        white = headers.get("White", "White")
+        black = headers.get("Black", "Black")
+        result = headers.get("Result", "*")
+        date = headers.get("UTCDate") or headers.get("Date", "")
+        time_control = headers.get("TimeControl", "")
+        time_class = classify_time_control(time_control)
+
+        print(f"  {white} vs {black} ({date}) [{gid}] [{time_class or 'unknown'}]")
+        moves, accuracy = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
+
+        game_obj = {
+            "white": white,
+            "black": black,
+            "white_accuracy": accuracy.get(chess.WHITE),
+            "black_accuracy": accuracy.get(chess.BLACK),
+            "result": result,
+            "date": date,
+            "time_control": time_control,
+            "time_class": time_class,
+            "moves": moves,
+        }
+        upload_game(firebase_key, gid, game_obj)
+        blunders = sum(1 for m in moves if m["classification"] == "Blunder")
+        print(f"    -> uploaded: {len(moves)} moves, {blunders} blunders")
+
+
+def main():
+    if not ACCOUNTS:
+        sys.exit("No accounts configured. Set CHESSCOM_ACCOUNTS (comma-separated) "
+                  "or the legacy CHESSCOM_USERNAME secret.")
+
+    init_firebase()
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
     try:
-        for gid, pgn_text in new_games:
-            pgn_game = chess.pgn.read_game(io.StringIO(pgn_text))
-            if pgn_game is None:
-                continue
-            headers = pgn_game.headers
-            white = headers.get("White", "White")
-            black = headers.get("Black", "Black")
-            result = headers.get("Result", "*")
-            date = headers.get("UTCDate") or headers.get("Date", "")
-
-            print(f"  {white} vs {black} ({date}) [{gid}]")
-            moves, accuracy = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
-
-            game_obj = {
-                "white": white,
-                "black": black,
-                "white_accuracy": accuracy.get(chess.WHITE),
-                "black_accuracy": accuracy.get(chess.BLACK),
-                "result": result,
-                "date": date,
-                "moves": moves,
-            }
-            upload_game(FIREBASE_USER_KEY, gid, game_obj)
-            blunders = sum(1 for m in moves if m["classification"] == "Blunder")
-            print(f"    -> uploaded: {len(moves)} moves, {blunders} blunders")
+        for chesscom_username, firebase_key in ACCOUNTS:
+            sync_account(engine, chesscom_username, firebase_key)
     finally:
         engine.quit()
 
-    print("Done.")
+    print("\nDone.")
 
 
 if __name__ == "__main__":
