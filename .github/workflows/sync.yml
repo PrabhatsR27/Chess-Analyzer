@@ -6,10 +6,6 @@ on:
     - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
-      force_reanalyze:
-        description: "Re-analyze and overwrite games already in Firebase (backfill mode)"
-        type: boolean
-        default: false
       sync_months:
         description: "How many months of chess.com history to scan this run"
         type: string
@@ -21,7 +17,7 @@ jobs:
     timeout-minutes: 360
 
     env:
-      CHESSCOM_USERNAME: ${{ secrets.CHESSCOM_USERNAME }}
+      CHESSCOM_ACCOUNTS: ${{ secrets.CHESSCOM_ACCOUNTS }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
       STOCKFISH_PATH: /usr/local/bin/stockfish
@@ -29,11 +25,10 @@ jobs:
       ANALYSIS_DEPTH: 20
       ANALYSIS_TIME_LIMIT: 5.0
       ANALYSIS_MULTIPV: 3
-      # Defaults to "1" month / no force-reanalyze on the scheduled cron runs.
-      # A manual "Run workflow" trigger can override both via the inputs above.
+      # Defaults to "1" month on the scheduled cron runs.
+      # A manual "Run workflow" trigger can override it via the input above.
       SYNC_MONTHS: ${{ github.event.inputs.sync_months || '1' }}
       MAX_GAMES_PER_RUN: 10
-      FORCE_REANALYZE: ${{ github.event.inputs.force_reanalyze || 'false' }}
 
     steps:
       - name: Check out repo
