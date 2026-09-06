@@ -26,11 +26,13 @@ jobs:
       FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
       STOCKFISH_PATH: /usr/local/bin/stockfish
       STOCKFISH_RELEASE: sf_18  # pin the engine version here
-      ANALYSIS_DEPTH: 14
+      ANALYSIS_DEPTH: 20
+      ANALYSIS_TIME_LIMIT: 5.0
+      ANALYSIS_MULTIPV: 3
       # Defaults to "1" month / no force-reanalyze on the scheduled cron runs.
       # A manual "Run workflow" trigger can override both via the inputs above.
       SYNC_MONTHS: ${{ github.event.inputs.sync_months || '1' }}
-      MAX_GAMES_PER_RUN: 20
+      MAX_GAMES_PER_RUN: 10
       FORCE_REANALYZE: ${{ github.event.inputs.force_reanalyze || 'false' }}
 
     steps:
@@ -58,4 +60,3 @@ jobs:
 
       - name: Run analyzer
         run: python analyzer.py
-        
