@@ -58,12 +58,19 @@ Optional repo secrets / vars:
                                 account that already has games in Firebase (default 1)
     MAX_GAMES_PER_RUN          cap so a single run can't blow past the Actions time limit,
                                 applies per account (default 20)
-    INITIAL_BACKFILL_GAMES     the very first time an account has zero games in Firebase,
+    INITIAL_BACKFILL_START     the very first time an account has zero games in Firebase,
+                                back-fill EVERY game from this fixed month onward (format
+                                "YYYY-MM", e.g. "2026-08") instead of a game-count cap --
+                                nothing before that month is ever pulled in. Every later run
+                                for that account is a normal incremental SYNC_MONTHS sync.
+                                Default "2026-08". Set to "" to fall back to the older
+                                count-based INITIAL_BACKFILL_GAMES behavior below.
+    INITIAL_BACKFILL_GAMES     fallback used only if INITIAL_BACKFILL_START is unset/unparsable:
                                 back-fill just this many of its most recent games instead of
-                                a full SYNC_MONTHS scan (default 20). Every later run for that
-                                account is a normal incremental sync.
+                                a full SYNC_MONTHS scan (default 20).
     INITIAL_BACKFILL_MAX_MONTHS  safety cap on how far back to look while hunting for those
-                                games, for accounts with little history (default 24)
+                                games in the INITIAL_BACKFILL_GAMES fallback, for accounts
+                                with little history (default 24)
     MATE_PUZZLE_MAX_PLIES      how many plies of a mating line to store in a puzzle's
                                 solution (default 8)
 """
@@ -128,13 +135,33 @@ ANALYSIS_MULTIPV = int(os.environ.get("ANALYSIS_MULTIPV", "3"))
 SYNC_MONTHS = int(os.environ.get("SYNC_MONTHS", "1"))
 MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
 # The very first time an account has zero games in Firebase, we backfill
-# just its N most recent games (regardless of how many months back that
-# spans) instead of every game in SYNC_MONTHS. After that first run, the
-# account is no longer "new" and goes back to normal incremental syncing.
+# EVERY game from this fixed month onward (format "YYYY-MM") -- nothing
+# before it. After that first run, the account is no longer "new" and goes
+# back to normal incremental SYNC_MONTHS syncing. Set to "" to fall back to
+# the older count-based INITIAL_BACKFILL_GAMES behavior instead.
+INITIAL_BACKFILL_START = os.environ.get("INITIAL_BACKFILL_START", "2026-08").strip()
+# Fallback used only if INITIAL_BACKFILL_START is unset/unparsable: backfill
+# just this many of the account's most recent games (regardless of how many
+# months back that spans) instead of every game in SYNC_MONTHS.
 INITIAL_BACKFILL_GAMES = int(os.environ.get("INITIAL_BACKFILL_GAMES", "20"))
 # Safety cap on how many months to look back while hunting for those N
 # games, in case a brand-new account has very few games ever played.
 INITIAL_BACKFILL_MAX_MONTHS = int(os.environ.get("INITIAL_BACKFILL_MAX_MONTHS", "24"))
+
+
+def _parse_backfill_start(value):
+    """Parse an "YYYY-MM" string into (year, month), or None if it's empty
+    or malformed -- callers fall back to the count-based backfill then."""
+    if not value:
+        return None
+    try:
+        y_str, m_str = value.split("-", 1)
+        year, month = int(y_str), int(m_str)
+        if 1 <= month <= 12:
+            return year, month
+    except (ValueError, TypeError):
+        pass
+    return None
 # How many plies of a mating (or best) line to keep as a puzzle's solution.
 MATE_PUZZLE_MAX_PLIES = int(os.environ.get("MATE_PUZZLE_MAX_PLIES", "8"))
 MATE_SCORE_CP = 10000  # how mate scores are encoded for the app's eval bar
@@ -572,6 +599,31 @@ def fetch_recent_chesscom_pgns(username, min_games, max_months_lookback=24):
     return games[:min_games]
 
 
+def fetch_chesscom_pgns_from(username, start_year, start_month):
+    """Walk monthly archives forward from start_year/start_month through the
+    current month, collecting every game found (no count cap). Used for the
+    fixed-start-month initial backfill: a brand new account gets every game
+    from that month onward, and nothing before it -- every later run then
+    falls into the normal incremental SYNC_MONTHS sync."""
+    games = []
+    now = datetime.utcnow()
+    year, month = start_year, start_month
+    while (year, month) <= (now.year, now.month):
+        url = f"https://api.chess.com/pub/player/{username}/games/{year:04d}/{month:02d}"
+        resp = requests.get(url, headers={"User-Agent": "endgame-analyzer/1.0 (+github actions)"})
+        if resp.ok:
+            data = resp.json()
+            for g in data.get("games", []):
+                if "pgn" in g:
+                    games.append((g.get("url", g.get("uuid", "")), g["pgn"], g.get("end_time", 0), g.get("time_class")))
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+    games.sort(key=lambda g: g[2], reverse=True)  # newest first
+    return games
+
+
 def game_id_from_url(url_or_id):
     slug = re.sub(r"[^a-zA-Z0-9_-]", "_", url_or_id)
     return slug[-40:] if slug else "game"
@@ -608,15 +660,23 @@ def sync_account(engine, chesscom_username, firebase_key):
     is_new_account = not already_synced
 
     if is_new_account:
-        # First time this account has ever been synced: grab only its N most
-        # recent games (regardless of how many months that spans), not
-        # everything in SYNC_MONTHS. Every later run finds already_synced
-        # non-empty and falls into the normal incremental path below.
-        print(f"No games in Firebase yet for {firebase_key} — backfilling the "
-              f"{INITIAL_BACKFILL_GAMES} most recent games instead of a full SYNC_MONTHS scan.")
-        raw_games = fetch_recent_chesscom_pgns(
-            chesscom_username, INITIAL_BACKFILL_GAMES, INITIAL_BACKFILL_MAX_MONTHS
-        )
+        # First time this account has ever been synced. Every later run finds
+        # already_synced non-empty and falls into the normal incremental path
+        # below, so this branch only ever runs once per account.
+        start = _parse_backfill_start(INITIAL_BACKFILL_START)
+        if start:
+            start_year, start_month = start
+            print(f"No games in Firebase yet for {firebase_key} — backfilling every game "
+                  f"from {start_year:04d}-{start_month:02d} onward (nothing earlier).")
+            raw_games = fetch_chesscom_pgns_from(chesscom_username, start_year, start_month)
+        else:
+            # Fallback: grab only its N most recent games (regardless of how
+            # many months that spans), not everything in SYNC_MONTHS.
+            print(f"No games in Firebase yet for {firebase_key} — backfilling the "
+                  f"{INITIAL_BACKFILL_GAMES} most recent games instead of a full SYNC_MONTHS scan.")
+            raw_games = fetch_recent_chesscom_pgns(
+                chesscom_username, INITIAL_BACKFILL_GAMES, INITIAL_BACKFILL_MAX_MONTHS
+            )
         new_games = [(game_id_from_url(gid), pgn, tc) for gid, pgn, _end, tc in raw_games]
     else:
         raw_games = fetch_chesscom_pgns(chesscom_username, SYNC_MONTHS)
