@@ -13,7 +13,9 @@ repo. Nothing to run by hand.
 Firebase schema written (matches what the Endgame app reads):
 
 users/{username}/games/{game_id} = {
-    white, black, white_accuracy, black_accuracy, result, date,
+    white, black, white_accuracy, black_accuracy,
+    white_rating, black_rating, opening, time_class, time_control,
+    result, date,
     moves: [
         { played, fen_before, eval_cp, classification, best_move, time_taken }
     ]
@@ -40,10 +42,10 @@ Optional repo secrets / vars:
     SYNC_MONTHS                how many months of chess.com history to scan each run for an
                                 account that already has games in Firebase (default 1)
     MAX_GAMES_PER_RUN          cap so a single run can't blow past the Actions time limit,
-                                applies per account (default 10)
+                                applies per account (default 20)
     INITIAL_BACKFILL_GAMES     the very first time an account has zero games in Firebase,
                                 back-fill just this many of its most recent games instead of
-                                a full SYNC_MONTHS scan (default 10). Every later run for that
+                                a full SYNC_MONTHS scan (default 20). Every later run for that
                                 account is a normal incremental sync.
     INITIAL_BACKFILL_MAX_MONTHS  safety cap on how far back to look while hunting for those
                                 games, for accounts with little history (default 24)
@@ -106,12 +108,12 @@ ANALYSIS_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "20"))
 ANALYSIS_TIME_LIMIT = float(os.environ.get("ANALYSIS_TIME_LIMIT", "5.0"))
 ANALYSIS_MULTIPV = int(os.environ.get("ANALYSIS_MULTIPV", "3"))
 SYNC_MONTHS = int(os.environ.get("SYNC_MONTHS", "1"))
-MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "10"))
+MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
 # The very first time an account has zero games in Firebase, we backfill
 # just its N most recent games (regardless of how many months back that
 # spans) instead of every game in SYNC_MONTHS. After that first run, the
 # account is no longer "new" and goes back to normal incremental syncing.
-INITIAL_BACKFILL_GAMES = int(os.environ.get("INITIAL_BACKFILL_GAMES", "10"))
+INITIAL_BACKFILL_GAMES = int(os.environ.get("INITIAL_BACKFILL_GAMES", "20"))
 # Safety cap on how many months to look back while hunting for those N
 # games, in case a brand-new account has very few games ever played.
 INITIAL_BACKFILL_MAX_MONTHS = int(os.environ.get("INITIAL_BACKFILL_MAX_MONTHS", "24"))
@@ -421,31 +423,24 @@ def game_id_from_url(url_or_id):
     return slug[-40:] if slug else "game"
 
 
-def classify_time_control(time_control):
-    """Map a PGN TimeControl header (e.g. "600", "180+2", "1/86400") to the
-    same bullet/blitz/rapid/daily buckets chess.com itself uses, so the app's
-    filter matches what players expect. Estimates total game length as
-    base_seconds + 40 * increment (a standard 40-move estimate), matching
-    how chess.com and lichess both classify a control's speed."""
-    if not time_control:
-        return None
-    time_control = time_control.strip()
-    if "/" in time_control:  # correspondence/daily format, e.g. "1/86400"
-        return "daily"
-    parts = time_control.split("+")
+def parse_rating(value):
+    """PGN Elo headers are strings (or '?', or absent) — coerce to int or None."""
     try:
-        base = int(parts[0])
-    except (ValueError, IndexError):
+        return int(value)
+    except (TypeError, ValueError):
         return None
-    increment = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-    estimated_total = base + 40 * increment
-    if estimated_total < 180:
-        return "bullet"
-    if estimated_total < 600:
-        return "blitz"
-    if estimated_total < 1800:
-        return "rapid"
-    return "classical"
+
+
+def opening_name_from_headers(headers):
+    """chess.com PGNs carry ECOUrl (e.g. '.../openings/Sicilian-Defense-Bowdler-Attack')
+    rather than a plain-text Opening tag. Turn that slug into a readable name,
+    falling back to the bare ECO code, then None."""
+    eco_url = headers.get("ECOUrl", "")
+    if eco_url:
+        slug = eco_url.rstrip("/").rsplit("/", 1)[-1]
+        if slug:
+            return slug.replace("-", " ")
+    return headers.get("ECO") or None
 
 
 # ============================================================
@@ -494,10 +489,13 @@ def sync_account(engine, chesscom_username, firebase_key):
         black = headers.get("Black", "Black")
         result = headers.get("Result", "*")
         date = headers.get("UTCDate") or headers.get("Date", "")
-        time_control = headers.get("TimeControl", "")
-        time_class = classify_time_control(time_control)
+        white_rating = parse_rating(headers.get("WhiteElo"))
+        black_rating = parse_rating(headers.get("BlackElo"))
+        opening = opening_name_from_headers(headers)
+        time_class = headers.get("TimeClass") or None
+        time_control = headers.get("TimeControl") or None
 
-        print(f"  {white} vs {black} ({date}) [{gid}] [{time_class or 'unknown'}]")
+        print(f"  {white} vs {black} ({date}) [{gid}]")
         moves, accuracy = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
 
         game_obj = {
@@ -505,10 +503,13 @@ def sync_account(engine, chesscom_username, firebase_key):
             "black": black,
             "white_accuracy": accuracy.get(chess.WHITE),
             "black_accuracy": accuracy.get(chess.BLACK),
+            "white_rating": white_rating,
+            "black_rating": black_rating,
+            "opening": opening,
+            "time_class": time_class,
+            "time_control": time_control,
             "result": result,
             "date": date,
-            "time_control": time_control,
-            "time_class": time_class,
             "moves": moves,
         }
         upload_game(firebase_key, gid, game_obj)
