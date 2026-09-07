@@ -1,5 +1,3 @@
-
-        
 #!/usr/bin/env python3
 """
 analyzer.py
@@ -16,10 +14,27 @@ users/{username}/games/{game_id} = {
     white, black, white_accuracy, black_accuracy,
     white_rating, black_rating, opening, time_class, time_control,
     result, date,
+    mate_stats: { found: {in1..in5}, missed: {in1..in5} },
     moves: [
-        { played, fen_before, eval_cp, classification, best_move, time_taken }
+        { played, fen_before, eval_cp, classification, best_move, time_taken,
+          missed_mate_in?, delivered_mate_in? }
     ]
 }
+
+users/{username}/puzzles/{game_id}_{ply} = {
+    fen, played, best_move, solution, move_count, classification,
+    mate_in, priority, game_id, opening, date
+}
+-- Generated from actual misses (Blunder / Mistake / Miss / Missed Mate) in
+   your own games. Never deleted or overwritten by anything else in this
+   script -- once written, a puzzle stays put permanently.
+
+users/{username}/repeated_mistakes/{pattern_key} = {
+    opening, classification, fen_before, played, best_move,
+    count, example_game_ids
+}
+-- One entry per distinct (opening, position, played move) mistake pattern,
+   incremented every time the same mistake shows up in a new game.
 
 Required repo secrets:
     FIREBASE_SERVICE_ACCOUNT   full service-account JSON, as a single secret
@@ -49,8 +64,11 @@ Optional repo secrets / vars:
                                 account is a normal incremental sync.
     INITIAL_BACKFILL_MAX_MONTHS  safety cap on how far back to look while hunting for those
                                 games, for accounts with little history (default 24)
+    MATE_PUZZLE_MAX_PLIES      how many plies of a mating line to store in a puzzle's
+                                solution (default 8)
 """
 
+import hashlib
 import io
 import json
 import math
@@ -117,6 +135,8 @@ INITIAL_BACKFILL_GAMES = int(os.environ.get("INITIAL_BACKFILL_GAMES", "20"))
 # Safety cap on how many months to look back while hunting for those N
 # games, in case a brand-new account has very few games ever played.
 INITIAL_BACKFILL_MAX_MONTHS = int(os.environ.get("INITIAL_BACKFILL_MAX_MONTHS", "24"))
+# How many plies of a mating (or best) line to keep as a puzzle's solution.
+MATE_PUZZLE_MAX_PLIES = int(os.environ.get("MATE_PUZZLE_MAX_PLIES", "8"))
 MATE_SCORE_CP = 10000  # how mate scores are encoded for the app's eval bar
 
 # Classification thresholds, in centipawn loss (how much worse the played
@@ -127,6 +147,10 @@ THRESH_MISTAKE = 300
 GREAT_GAP = 150       # 2nd best move must be at least this much worse, in a sharp spot
 BOOK_PLIES = 10        # first N half-moves are eligible to be tagged "Book"
 BOOK_MAX_LOSS = 20
+
+# Classifications that count as an actual miss worth turning into a puzzle
+# and worth tracking as a repeated mistake pattern.
+PUZZLE_CLASSES = {"Blunder", "Mistake", "Miss"}
 
 
 # ============================================================
@@ -152,6 +176,51 @@ def upload_game(username, game_id, game_obj):
     db.reference(f"users/{username}/games/{game_id}").set(game_obj)
 
 
+def upload_puzzles(username, game_id, puzzles):
+    """Puzzles are keyed by {game_id}_{index}, so re-analyzing the same game
+    just overwrites its own puzzles in place -- puzzles from every other
+    game are untouched and stay forever, as intended."""
+    if not puzzles:
+        return
+    updates = {}
+    for i, p in enumerate(puzzles):
+        puzzle_id = f"{game_id}_{i}"
+        p["game_id"] = game_id
+        updates[puzzle_id] = p
+    db.reference(f"users/{username}/puzzles").update(updates)
+
+
+def mistake_pattern_key(opening, fen_before, played_san):
+    """Same opening + same board position + same wrong move played =
+    the same repeated-mistake pattern, regardless of which game it's from."""
+    board_only = fen_before.split(" ")[0]  # piece placement, ignore clocks/rights noise
+    raw = f"{opening or 'unknown'}|{board_only}|{played_san}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def record_repeated_mistakes(username, game_id, opening, moves):
+    ref_base = db.reference(f"users/{username}/repeated_mistakes")
+    for m in moves:
+        cls = m["classification"]
+        if cls not in PUZZLE_CLASSES and not cls.startswith("Missed Mate"):
+            continue
+        key = mistake_pattern_key(opening, m["fen_before"], m["played"])
+        node = ref_base.child(key)
+        existing = node.get() or {}
+        game_ids = existing.get("example_game_ids", [])
+        if game_id not in game_ids:
+            game_ids = (game_ids + [game_id])[-10:]
+        node.update({
+            "opening": opening,
+            "classification": cls,
+            "fen_before": m["fen_before"],
+            "played": m["played"],
+            "best_move": m["best_move"],
+            "count": existing.get("count", 0) + 1,
+            "example_game_ids": game_ids,
+        })
+
+
 # ============================================================
 # ENGINE HELPERS
 # ============================================================
@@ -168,7 +237,10 @@ def score_to_cp(score: "chess.engine.PovScore", pov_color: bool) -> int:
 
 
 def analyze_position(engine, board, depth, multipv=2, time_limit=None):
-    """Return engine lines (best first): [{'move', 'san', 'cp'}], cp from side-to-move's perspective."""
+    """Return engine lines (best first): [{'move','san','cp','mate_in','pv'}],
+    cp from side-to-move's perspective. mate_in is the forced-mate distance
+    (in moves, positive = mover delivers it) when the line is a forced mate,
+    else None. pv is the raw list of engine Move objects for that line."""
     limit = chess.engine.Limit(depth=depth, time=time_limit) if time_limit else chess.engine.Limit(depth=depth)
     info = engine.analyse(board, limit, multipv=multipv)
     if isinstance(info, dict):
@@ -179,9 +251,49 @@ def analyze_position(engine, board, depth, multipv=2, time_limit=None):
         if not pv:
             continue
         move = pv[0]
+        pov_score = entry["score"].pov(board.turn)
         cp = score_to_cp(entry["score"], board.turn)
-        lines.append({"move": move, "san": board.san(move), "cp": cp})
+        mate_in = pov_score.mate() if pov_score.is_mate() else None
+        lines.append({"move": move, "san": board.san(move), "cp": cp, "mate_in": mate_in, "pv": pv})
     return lines
+
+
+def pv_to_sans(board, pv_moves, max_plies=MATE_PUZZLE_MAX_PLIES):
+    """Turn a raw engine PV (list of Move objects, from the given board) into
+    a list of SAN strings a puzzle can display as the solution."""
+    b = board.copy()
+    sans = []
+    for mv in pv_moves[:max_plies]:
+        try:
+            sans.append(b.san(mv))
+            b.push(mv)
+        except Exception:
+            break
+    return sans
+
+
+def puzzle_move_count(pv, mate_in):
+    """How many moves (not plies) the puzzle solution takes -- for a forced
+    mate this is exactly the mate distance; otherwise it's estimated from
+    how many plies of the engine's line are worth showing."""
+    if mate_in:
+        return mate_in
+    plies = len(pv)
+    return max(1, (plies + 1) // 2)
+
+
+def puzzle_priority(classification, move_count):
+    """Higher = surfaced first in Personal Practice. Missed mates rank
+    highest, and -- per the ask -- puzzles solvable in 2-3 moves get a
+    boost over one-movers or long grinds, since those teach the pattern
+    best without being trivial or overwhelming."""
+    base_key = "Missed Mate" if classification.startswith("Missed Mate") else classification
+    base = {"Missed Mate": 100, "Miss": 55, "Blunder": 60, "Mistake": 40}.get(base_key, 20)
+    if move_count in (2, 3):
+        base += 30
+    elif move_count == 1:
+        base += 5
+    return base
 
 
 # ============================================================
@@ -268,6 +380,9 @@ def parse_clock(comment):
 def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
     board = pgn_game.board()
     moves_out = []
+    puzzles_out = []
+    mate_stats = {"found": {f"in{n}": 0 for n in range(1, 6)},
+                  "missed": {f"in{n}": 0 for n in range(1, 6)}}
     prev_clock = {chess.WHITE: None, chess.BLACK: None}
     winpct_acc = {chess.WHITE: [], chess.BLACK: []}
     weights = {chess.WHITE: [], chess.BLACK: []}
@@ -283,13 +398,22 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         san_played = board.san(move)
 
         lines = analyze_position(engine, board, depth, multipv=ANALYSIS_MULTIPV, time_limit=ANALYSIS_TIME_LIMIT)
-        best_line = lines[0] if lines else {"move": move, "san": san_played, "cp": 0}
+        best_line = lines[0] if lines else {"move": move, "san": san_played, "cp": 0, "mate_in": None, "pv": [move]}
         second_cp = lines[1]["cp"] if len(lines) > 1 else best_line["cp"]
         is_best = (move == best_line["move"])
         sac = detect_sacrifice(board, move)
-        
+
         # The true evaluation of the position before the player acts
         best_cp_mover = best_line["cp"]
+        best_mate_in = best_line.get("mate_in")
+
+        # Forced mate was on the board for the mover, and they didn't take it.
+        missed_mate_in = best_mate_in if (best_mate_in is not None and best_mate_in > 0 and not is_best) else None
+        # Forced mate was on the board, and the played move is engine-best (took it).
+        delivered_mate_in = best_mate_in if (best_mate_in is not None and best_mate_in > 0 and is_best) else None
+
+        # Capture the puzzle-worthy solution line before the board moves on.
+        puzzle_pv_sans = pv_to_sans(board, best_line["pv"]) if best_line.get("pv") else []
 
         board.push(move)
         after_limit = chess.engine.Limit(depth=depth, time=ANALYSIS_TIME_LIMIT)
@@ -306,6 +430,11 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             sacrifice=sac,
             prior_eval_for_mover=best_cp_mover, # FIXED: passing the correct prior eval
         )
+        if missed_mate_in is not None and missed_mate_in <= 5:
+            classification = f"Missed Mate in {missed_mate_in}"
+            mate_stats["missed"][f"in{missed_mate_in}"] += 1
+        if delivered_mate_in is not None and delivered_mate_in <= 5:
+            mate_stats["found"][f"in{delivered_mate_in}"] += 1
 
         # eval_cp stored from WHITE's perspective for a consistent eval bar
         eval_cp_white = played_cp_mover if mover_color == chess.WHITE else -played_cp_mover
@@ -340,7 +469,27 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         }
         if time_taken is not None:
             entry["time_taken"] = time_taken
+        if missed_mate_in is not None:
+            entry["missed_mate_in"] = missed_mate_in
+        if delivered_mate_in is not None:
+            entry["delivered_mate_in"] = delivered_mate_in
         moves_out.append(entry)
+
+        # Puzzle-worthy miss? Build it from the position *before* the mistake,
+        # using the engine's line as the solution.
+        is_puzzle_worthy = classification in PUZZLE_CLASSES or classification.startswith("Missed Mate")
+        if is_puzzle_worthy and puzzle_pv_sans:
+            move_count = puzzle_move_count(best_line["pv"], missed_mate_in)
+            puzzles_out.append({
+                "fen": fen_before,
+                "played": san_played,
+                "best_move": best_line["san"],
+                "solution": puzzle_pv_sans,
+                "move_count": move_count,
+                "classification": classification,
+                "mate_in": missed_mate_in,
+                "priority": puzzle_priority(classification, move_count),
+            })
 
         node = next_node
         ply += 1
@@ -368,12 +517,17 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             rms_accuracy = 100.0 - rms_deficiency
             accuracy[color] = round(max(0.0, min(100.0, rms_accuracy)), 1)
 
-    return moves_out, accuracy
-        
+    return moves_out, accuracy, mate_stats, puzzles_out
+
 # ============================================================
 # CHESS.COM SOURCE
 # ============================================================
 def fetch_chesscom_pgns(username, months=1):
+    """Returns [(game_id_or_url, pgn_text, end_time, time_class), ...].
+    time_class comes straight from chess.com's own JSON field for the game
+    (chess.com's authoritative classification -- e.g. a 30-minute game is
+    "rapid" per chess.com's own rules), not from parsing the PGN, whose
+    TimeClass header is missing/unreliable."""
     games = []
     now = datetime.utcnow()
     year, month = now.year, now.month
@@ -384,7 +538,7 @@ def fetch_chesscom_pgns(username, months=1):
             data = resp.json()
             for g in data.get("games", []):
                 if "pgn" in g:
-                    games.append((g.get("url", g.get("uuid", "")), g["pgn"], g.get("end_time", 0)))
+                    games.append((g.get("url", g.get("uuid", "")), g["pgn"], g.get("end_time", 0), g.get("time_class")))
         month -= 1
         if month == 0:
             month = 12
@@ -408,7 +562,7 @@ def fetch_recent_chesscom_pgns(username, min_games, max_months_lookback=24):
             data = resp.json()
             for g in data.get("games", []):
                 if "pgn" in g:
-                    games.append((g.get("url", g.get("uuid", "")), g["pgn"], g.get("end_time", 0)))
+                    games.append((g.get("url", g.get("uuid", "")), g["pgn"], g.get("end_time", 0), g.get("time_class")))
         months_checked += 1
         month -= 1
         if month == 0:
@@ -463,14 +617,14 @@ def sync_account(engine, chesscom_username, firebase_key):
         raw_games = fetch_recent_chesscom_pgns(
             chesscom_username, INITIAL_BACKFILL_GAMES, INITIAL_BACKFILL_MAX_MONTHS
         )
-        new_games = [(game_id_from_url(gid), pgn) for gid, pgn, _ in raw_games]
+        new_games = [(game_id_from_url(gid), pgn, tc) for gid, pgn, _end, tc in raw_games]
     else:
         raw_games = fetch_chesscom_pgns(chesscom_username, SYNC_MONTHS)
         new_games = []
-        for game_id_raw, pgn_text, _end_time in raw_games:
+        for game_id_raw, pgn_text, _end_time, tc in raw_games:
             gid = game_id_from_url(game_id_raw)
             if gid not in already_synced:
-                new_games.append((gid, pgn_text))
+                new_games.append((gid, pgn_text, tc))
 
         new_games = new_games[-MAX_GAMES_PER_RUN:]  # newest first isn't guaranteed by the API, so just cap the batch
 
@@ -480,7 +634,7 @@ def sync_account(engine, chesscom_username, firebase_key):
 
     print(f"Analyzing {len(new_games)} game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
 
-    for gid, pgn_text in new_games:
+    for gid, pgn_text, api_time_class in new_games:
         pgn_game = chess.pgn.read_game(io.StringIO(pgn_text))
         if pgn_game is None:
             continue
@@ -492,11 +646,15 @@ def sync_account(engine, chesscom_username, firebase_key):
         white_rating = parse_rating(headers.get("WhiteElo"))
         black_rating = parse_rating(headers.get("BlackElo"))
         opening = opening_name_from_headers(headers)
-        time_class = headers.get("TimeClass") or None
+        # Prefer chess.com's own JSON time_class (authoritative -- this is
+        # literally what chess.com itself calls the game, e.g. "rapid" for a
+        # 30-minute game). Only fall back to the PGN header, which chess.com
+        # often omits or leaves stale, if the API didn't give us one.
+        time_class = api_time_class or headers.get("TimeClass") or None
         time_control = headers.get("TimeControl") or None
 
         print(f"  {white} vs {black} ({date}) [{gid}]")
-        moves, accuracy = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
+        moves, accuracy, mate_stats, puzzles = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
 
         game_obj = {
             "white": white,
@@ -510,11 +668,18 @@ def sync_account(engine, chesscom_username, firebase_key):
             "time_control": time_control,
             "result": result,
             "date": date,
+            "mate_stats": mate_stats,
             "moves": moves,
         }
         upload_game(firebase_key, gid, game_obj)
+        upload_puzzles(firebase_key, gid, puzzles)
+        record_repeated_mistakes(firebase_key, gid, opening, moves)
+
         blunders = sum(1 for m in moves if m["classification"] == "Blunder")
-        print(f"    -> uploaded: {len(moves)} moves, {blunders} blunders")
+        mates_found = sum(mate_stats["found"].values())
+        mates_missed = sum(mate_stats["missed"].values())
+        print(f"    -> uploaded: {len(moves)} moves, {blunders} blunders, "
+              f"{len(puzzles)} puzzles, mates found {mates_found} / missed {mates_missed}")
 
 
 def main():
