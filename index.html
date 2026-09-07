@@ -2821,7 +2821,6 @@ async function fetchCloudEval(fen) {
     shown = true;
     cloudEvalCache.set(fen, local);
     applyCloudEval(local, myToken);
-    if (label) label.innerText = '🖥️';
   });
 
   const cloud = await cloudPromise;
