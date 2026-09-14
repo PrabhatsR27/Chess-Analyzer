@@ -1,0 +1,12 @@
+{
+  "name": "chess-analyzer",
+  "version": "1.0.0",
+  "description": "Chess analytics and analysis tool",
+  "private": true,
+  "scripts": {
+    "build": "echo 'No build step required for static HTML'"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^1.4.1"
+  }
+}
