@@ -3,8 +3,9 @@
 analyzer.py
 -----------
 Runs unattended in GitHub Actions (see .github/workflows/sync.yml), every
-3 hours: pulls your newest chess.com games, analyzes them with Stockfish 18,
-classifies every move, and writes the result straight to Firebase using the
+15 minutes (queued via workflow concurrency so overlapping runs don't
+clobber each other): pulls your newest chess.com games, analyzes them with
+Stockfish 19, classifies every move, and writes the result straight to Firebase using the
 firebase-admin SDK and the service-account secret already configured in the
 repo. Nothing to run by hand.
 
@@ -49,10 +50,11 @@ Required repo secrets:
 
 Optional repo secrets / vars:
     STOCKFISH_PATH             defaults to "stockfish" (resolved on PATH by the workflow)
-    ANALYSIS_DEPTH             defaults to 20
-    ANALYSIS_TIME_LIMIT        per-position time cap in seconds, defaults to 5.0 (safety net
+    ANALYSIS_DEPTH             defaults to 25
+    ANALYSIS_TIME_LIMIT        per-position time cap in seconds, defaults to 10.0 (safety net
                                 alongside depth so one unusually complex position can't blow
-                                up a run)
+                                up a run) -- whichever of depth or time hits first ends the
+                                search for that position
     ANALYSIS_MULTIPV           how many engine lines to compute per position, defaults to 3
     SYNC_MONTHS                how many months of chess.com history to scan each run for an
                                 account that already has games in Firebase (default 1)
@@ -117,12 +119,13 @@ ACCOUNTS = _parse_accounts()
 FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL")
 FIREBASE_SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "stockfish")
-ANALYSIS_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "20"))
+ANALYSIS_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "25"))
 # Safety net alongside depth: if a position is unusually complex and Stockfish
 # is still chewing on it, cut it off after this many seconds so one hard
-# position can't blow up the whole run. Only matters on days with more volume
-# than usual — normal games finish well under this per position.
-ANALYSIS_TIME_LIMIT = float(os.environ.get("ANALYSIS_TIME_LIMIT", "5.0"))
+# position can't blow up the whole run. Whichever of depth/time hits first
+# ends that position's search -- quiet positions finish well under this on
+# depth alone, sharp/complex ones get capped by time instead.
+ANALYSIS_TIME_LIMIT = float(os.environ.get("ANALYSIS_TIME_LIMIT", "10.0"))
 ANALYSIS_MULTIPV = int(os.environ.get("ANALYSIS_MULTIPV", "3"))
 SYNC_MONTHS = int(os.environ.get("SYNC_MONTHS", "1"))
 MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
