@@ -48,19 +48,71 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/stockfish
-          key: stockfish-${{ env.STOCKFISH_RELEASE }}
+          key: stockfish-${{ env.STOCKFISH_RELEASE }}-v2
 
       - name: Install Stockfish (pinned official release)
         if: steps.cache-stockfish.outputs.cache-hit != 'true'
         run: |
-          curl -L -o stockfish.tar \
-            "https://github.com/official-stockfish/Stockfish/releases/download/${STOCKFISH_RELEASE}/stockfish-linux-x86-64-universal.tar.gz"
-          tar -xf stockfish.tar
-          sudo mv stockfish/stockfish-ubuntu-x86-64-avx2 "$STOCKFISH_PATH"
+          set -euo pipefail
+
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+          # Don't hardcode the asset filename — Stockfish has renamed assets
+          # between releases (e.g. sf_19 moved to "universal binaries" and
+          # dropped the old per-CPU-variant naming). Resolve the real
+          # download URL from the release's actual asset list instead.
+          API_URL="https://api.github.com/repos/official-stockfish/Stockfish/releases/tags/${STOCKFISH_RELEASE}"
+
+          echo "Fetching release metadata: $API_URL"
+          ASSETS_JSON=$(curl -sSL -H "Accept: application/vnd.github+json" "$API_URL")
+
+          ASSET_URL=$(echo "$ASSETS_JSON" \
+            | jq -r '.assets[]?.browser_download_url' \
+            | grep -iE 'linux.*(x86[-_]?64|amd64)' \
+            | grep -v '\.sha256' \
+            | head -n1)
+
+          if [ -z "${ASSET_URL:-}" ] || [ "$ASSET_URL" = "null" ]; then
+            echo "::error::Could not find a Linux x86-64 asset for release ${STOCKFISH_RELEASE}"
+            echo "Available assets were:"
+            echo "$ASSETS_JSON" | jq -r '.assets[]?.name'
+            exit 1
+          fi
+
+          echo "Resolved asset URL: $ASSET_URL"
+          curl -fL -o stockfish.archive "$ASSET_URL"
+
+          # Sanity-check we actually got an archive, not an error page.
+          file stockfish.archive
+          SIZE=$(stat -c%s stockfish.archive)
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::Downloaded file is suspiciously small ($SIZE bytes) — likely not a real archive"
+            cat stockfish.archive || true
+            exit 1
+          fi
+
+          mkdir -p sf_extracted
+          tar -xf stockfish.archive -C sf_extracted
+
+          # Don't hardcode the extracted binary's filename either — find the
+          # actual executable inside the extracted tree.
+          BIN_PATH=$(find sf_extracted -type f -executable | head -n1)
+          if [ -z "${BIN_PATH:-}" ]; then
+            echo "::error::No executable found inside the extracted archive"
+            find sf_extracted -maxdepth 3
+            exit 1
+          fi
+
+          echo "Found binary: $BIN_PATH"
+          sudo mv "$BIN_PATH" "$STOCKFISH_PATH"
           sudo chmod +x "$STOCKFISH_PATH"
 
       - name: Sanity-check Stockfish
-        run: "$STOCKFISH_PATH --help || true"
+        run: |
+          "$STOCKFISH_PATH" --help || true
+          echo "uci
+quit" | "$STOCKFISH_PATH" | grep -i "id name" || true
 
       - name: Install Python dependencies
         run: |
