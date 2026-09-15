@@ -2,8 +2,8 @@ name: Sync & Analyze Games
 
 on:
   schedule:
-    # Every 15 minutes
-    - cron: "*/15 * * * *"
+    # Every 30 minutes
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       sync_months:
@@ -27,12 +27,12 @@ jobs:
       STOCKFISH_PATH: /usr/local/bin/stockfish
       STOCKFISH_RELEASE: sf_19  # pin the engine version here
       ANALYSIS_DEPTH: 25
-      ANALYSIS_TIME_LIMIT: 10.0
+      ANALYSIS_TIME_LIMIT: 8.0
       ANALYSIS_MULTIPV: 3
       # Defaults to "1" month on the scheduled cron runs.
       # A manual "Run workflow" trigger can override it via the input above.
       SYNC_MONTHS: ${{ github.event.inputs.sync_months || '1' }}
-      MAX_GAMES_PER_RUN: 1
+      MAX_GAMES_PER_RUN: 3
 
     steps:
       - name: Check out repo
