@@ -2,8 +2,8 @@ name: Sync & Analyze Games
 
 on:
   schedule:
-    # Every 3 hours
-    - cron: "0 */3 * * *"
+    # Every 15 minutes
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       sync_months:
@@ -11,24 +11,28 @@ on:
         type: string
         default: "1"
 
+concurrency:
+  group: sync-analyze-games
+  cancel-in-progress: false   # queue instead of overwriting an in-progress run
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
 
     env:
       CHESSCOM_ACCOUNTS: ${{ secrets.CHESSCOM_ACCOUNTS }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
       STOCKFISH_PATH: /usr/local/bin/stockfish
-      STOCKFISH_RELEASE: sf_18  # pin the engine version here
-      ANALYSIS_DEPTH: 20
-      ANALYSIS_TIME_LIMIT: 5.0
+      STOCKFISH_RELEASE: sf_19  # pin the engine version here
+      ANALYSIS_DEPTH: 25
+      ANALYSIS_TIME_LIMIT: 10.0
       ANALYSIS_MULTIPV: 3
       # Defaults to "1" month on the scheduled cron runs.
       # A manual "Run workflow" trigger can override it via the input above.
       SYNC_MONTHS: ${{ github.event.inputs.sync_months || '1' }}
-      MAX_GAMES_PER_RUN: 10
+      MAX_GAMES_PER_RUN: 1
 
     steps:
       - name: Check out repo
@@ -39,14 +43,24 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Cache Stockfish binary
+        id: cache-stockfish
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/stockfish
+          key: stockfish-${{ env.STOCKFISH_RELEASE }}
+
       - name: Install Stockfish (pinned official release)
+        if: steps.cache-stockfish.outputs.cache-hit != 'true'
         run: |
           curl -L -o stockfish.tar \
             "https://github.com/official-stockfish/Stockfish/releases/download/${STOCKFISH_RELEASE}/stockfish-ubuntu-x86-64-avx2.tar"
           tar -xf stockfish.tar
           sudo mv stockfish/stockfish-ubuntu-x86-64-avx2 "$STOCKFISH_PATH"
           sudo chmod +x "$STOCKFISH_PATH"
-          "$STOCKFISH_PATH" --help || true  # sanity check it runs
+
+      - name: Sanity-check Stockfish
+        run: "$STOCKFISH_PATH --help || true"
 
       - name: Install Python dependencies
         run: |
