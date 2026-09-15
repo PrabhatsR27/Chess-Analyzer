@@ -54,7 +54,7 @@ jobs:
         if: steps.cache-stockfish.outputs.cache-hit != 'true'
         run: |
           curl -L -o stockfish.tar \
-            "https://github.com/official-stockfish/Stockfish/releases/download/${STOCKFISH_RELEASE}/stockfish-ubuntu-x86-64-avx2.tar.gz"
+            "https://github.com/official-stockfish/Stockfish/releases/download/${STOCKFISH_RELEASE}/stockfish-linux-x86-64-universal.tar.gz"
           tar -xf stockfish.tar
           sudo mv stockfish/stockfish-ubuntu-x86-64-avx2 "$STOCKFISH_PATH"
           sudo chmod +x "$STOCKFISH_PATH"
