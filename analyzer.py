@@ -3,7 +3,7 @@
 analyzer.py
 -----------
 Runs unattended in GitHub Actions (see .github/workflows/sync.yml), every
-30 minutes (queued via workflow concurrency so overlapping runs don't
+15 minutes (queued via workflow concurrency so overlapping runs don't
 clobber each other): pulls your newest chess.com games, analyzes them with
 Stockfish 19, classifies every move, and writes the result straight to Firebase using the
 firebase-admin SDK and the service-account secret already configured in the
@@ -67,8 +67,6 @@ Optional repo secrets / vars:
                                 account is a normal incremental sync.
     MATE_PUZZLE_MAX_PLIES      how many plies of a mating line to store in a puzzle's
                                 solution (default 8)
-    MAX_PUZZLES_PER_GAME       cap on how many puzzles a single game can generate,
-                                keeping only the highest-priority ones (default 2)
 """
 
 import hashlib
@@ -78,7 +76,6 @@ import math
 import os
 import re
 import sys
-import time
 from datetime import datetime
 
 import chess
@@ -138,12 +135,19 @@ MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
 # After that first run, the account is no longer "new" and goes back to
 # normal incremental syncing.
 INITIAL_BACKFILL_MONTHS = int(os.environ.get("INITIAL_BACKFILL_MONTHS", "1"))
+# One-off manual trigger: set this to force re-analysis of the last N
+# calendar months of games EVEN IF they already exist in Firebase (e.g.
+# after fixing the accuracy formula). 0 (default) = disabled, normal
+# incremental sync only touches games it hasn't seen before. Re-analyzed
+# games overwrite their existing Firebase entry in place -- puzzles and
+# repeated-mistake counters are similarly overwritten/incremented as usual.
+REANALYZE_MONTHS = int(os.environ.get("REANALYZE_MONTHS", "0"))
+# How many games a reanalyze run is allowed to touch per account per run --
+# separate from MAX_GAMES_PER_RUN since a multi-month backlog of re-analysis
+# can be much larger than a normal incremental sync batch.
+REANALYZE_MAX_GAMES_PER_RUN = int(os.environ.get("REANALYZE_MAX_GAMES_PER_RUN", "100"))
 # How many plies of a mating (or best) line to keep as a puzzle's solution.
 MATE_PUZZLE_MAX_PLIES = int(os.environ.get("MATE_PUZZLE_MAX_PLIES", "8"))
-# Cap on puzzles generated per game -- games with many misses only keep their
-# highest-priority (most instructive) puzzles, so one bad game doesn't flood
-# Personal Practice with near-duplicate puzzles.
-MAX_PUZZLES_PER_GAME = int(os.environ.get("MAX_PUZZLES_PER_GAME", "2"))
 MATE_SCORE_CP = 10000  # how mate scores are encoded for the app's eval bar
 
 # Classification thresholds, in centipawn loss (how much worse the played
@@ -158,72 +162,6 @@ BOOK_MAX_LOSS = 20
 # Classifications that count as an actual miss worth turning into a puzzle
 # and worth tracking as a repeated mistake pattern.
 PUZZLE_CLASSES = {"Blunder", "Mistake", "Miss"}
-
-# ============================================================
-# TIMING DIAGNOSTICS — tracks whether ANALYSIS_DEPTH or
-# ANALYSIS_TIME_LIMIT is the one actually ending each position's
-# search, so we can tell from the Actions logs whether the time cap
-# is the real bottleneck (as opposed to depth finishing first).
-# ============================================================
-_TIMING_STATS = {
-    "count": 0,
-    "total_time": 0.0,
-    "depths": [],            # depth reached, for positions that actually searched (excludes terminal/game-over calls)
-    "terminal_count": 0,     # positions with no legal moves (checkmate/stalemate) -- depth 0 by definition, not a real search
-    "time_capped": 0,        # positions that hit ANALYSIS_TIME_LIMIT before finishing the target depth
-    "time_capped_depths": [],  # depth reached specifically for the time-capped positions
-}
-
-
-def _record_timing(elapsed, depth_reached, target_depth, time_limit):
-    _TIMING_STATS["count"] += 1
-    _TIMING_STATS["total_time"] += elapsed
-    # depth 0 with near-zero elapsed time means the engine had nothing to
-    # search (checkmate/stalemate on the board) -- not a real search, so it
-    # doesn't belong in the depth-reached stats or the time-capped count.
-    is_terminal = (depth_reached == 0 and elapsed < 0.5)
-    if is_terminal:
-        _TIMING_STATS["terminal_count"] += 1
-        return
-    if depth_reached is not None:
-        _TIMING_STATS["depths"].append(depth_reached)
-    # Consider it time-capped if it stopped noticeably short of the target
-    # depth AND ran close to the full time budget (within 0.5s) -- a solid
-    # signal the time limit, not depth, ended the search.
-    if time_limit and elapsed >= (time_limit - 0.5):
-        if depth_reached is None or depth_reached < target_depth:
-            _TIMING_STATS["time_capped"] += 1
-            if depth_reached is not None:
-                _TIMING_STATS["time_capped_depths"].append(depth_reached)
-
-
-def print_timing_summary():
-    n = _TIMING_STATS["count"]
-    if n == 0:
-        print("\n[timing] No positions analyzed -- nothing to report.")
-        return
-    avg_time = _TIMING_STATS["total_time"] / n
-    depths = _TIMING_STATS["depths"]
-    avg_depth = sum(depths) / len(depths) if depths else 0
-    min_depth = min(depths) if depths else 0
-    max_depth = max(depths) if depths else 0
-    capped = _TIMING_STATS["time_capped"]
-    capped_pct = 100.0 * capped / n
-    terminal = _TIMING_STATS["terminal_count"]
-    capped_depths = _TIMING_STATS["time_capped_depths"]
-    print(
-        f"\n[timing] {n} positions analyzed ({terminal} terminal/no-search skipped) | "
-        f"avg {avg_time:.2f}s/position | "
-        f"depth reached: avg {avg_depth:.1f}, min {min_depth}, max {max_depth} "
-        f"(target {ANALYSIS_DEPTH}) | "
-        f"time-limit hit before target depth: {capped}/{n} ({capped_pct:.0f}%)"
-    )
-    if capped_depths:
-        print(
-            f"[timing]   -> of those {capped} time-capped positions: "
-            f"depth min {min(capped_depths)}, max {max(capped_depths)}, "
-            f"avg {sum(capped_depths)/len(capped_depths):.1f}"
-        )
 
 
 # ============================================================
@@ -281,7 +219,11 @@ def record_repeated_mistakes(username, game_id, opening, moves):
         node = ref_base.child(key)
         existing = node.get() or {}
         game_ids = existing.get("example_game_ids", [])
-        if game_id not in game_ids:
+        # If this game already contributed to this pattern (e.g. we're
+        # re-analyzing it after a formula fix), don't bump the count again --
+        # only a genuinely new game should increment it.
+        already_counted = game_id in game_ids
+        if not already_counted:
             game_ids = (game_ids + [game_id])[-10:]
         node.update({
             "opening": opening,
@@ -289,7 +231,7 @@ def record_repeated_mistakes(username, game_id, opening, moves):
             "fen_before": m["fen_before"],
             "played": m["played"],
             "best_move": m["best_move"],
-            "count": existing.get("count", 0) + 1,
+            "count": existing.get("count", 0) if already_counted else existing.get("count", 0) + 1,
             "example_game_ids": game_ids,
         })
 
@@ -315,13 +257,9 @@ def analyze_position(engine, board, depth, multipv=2, time_limit=None):
     (in moves, positive = mover delivers it) when the line is a forced mate,
     else None. pv is the raw list of engine Move objects for that line."""
     limit = chess.engine.Limit(depth=depth, time=time_limit) if time_limit else chess.engine.Limit(depth=depth)
-    start = time.time()
     info = engine.analyse(board, limit, multipv=multipv)
-    elapsed = time.time() - start
     if isinstance(info, dict):
         info = [info]
-    depth_reached = max((entry.get("depth", 0) for entry in info), default=None)
-    _record_timing(elapsed, depth_reached, depth, time_limit)
     lines = []
     for entry in info:
         pv = entry.get("pv")
@@ -331,8 +269,23 @@ def analyze_position(engine, board, depth, multipv=2, time_limit=None):
         pov_score = entry["score"].pov(board.turn)
         cp = score_to_cp(entry["score"], board.turn)
         mate_in = pov_score.mate() if pov_score.is_mate() else None
-        lines.append({"move": move, "san": board.san(move), "cp": cp, "mate_in": mate_in, "pv": pv})
+        win_pct = win_pct_from_info(entry, board.turn, cp)
+        lines.append({"move": move, "san": board.san(move), "cp": cp, "mate_in": mate_in,
+                      "pv": pv, "win_pct": win_pct})
     return lines
+
+
+def win_pct_from_info(info_entry, pov_color, cp_fallback):
+    """Prefer the engine's own WDL model (version-agnostic, since it reflects
+    whatever the running binary's cp numbers actually mean) over the
+    hardcoded cp->win% sigmoid, which drifts whenever Stockfish's internal
+    cp normalization changes between versions. Falls back to the sigmoid
+    only if the engine isn't reporting WDL (e.g. UCI_ShowWDL unsupported)."""
+    wdl = info_entry.get("wdl")
+    if wdl is not None:
+        pov_wdl = wdl.pov(pov_color)
+        return pov_wdl.expectation() * 100.0
+    return cp_to_winpct(cp_fallback)
 
 
 def pv_to_sans(board, pv_moves, max_plies=MATE_PUZZLE_MAX_PLIES):
@@ -494,11 +447,10 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
 
         board.push(move)
         after_limit = chess.engine.Limit(depth=depth, time=ANALYSIS_TIME_LIMIT)
-        _after_start = time.time()
         after_info = engine.analyse(board, after_limit)
-        _record_timing(time.time() - _after_start, after_info.get("depth"), depth, ANALYSIS_TIME_LIMIT)
         after_score = after_info["score"]
         played_cp_mover = score_to_cp(after_score, mover_color)
+        wp_after = win_pct_from_info(after_info, mover_color, played_cp_mover)
         had_only_good_move = (best_line["cp"] - second_cp) >= GREAT_GAP
 
         classification = classify_move(
@@ -526,9 +478,13 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         if clk is not None:
             prev_clock[mover_color] = clk
 
-        # FIXED ACCURACY MATH: Compare the played move against the best possible move
-        wp_before = cp_to_winpct(best_cp_mover)
-        wp_after = cp_to_winpct(played_cp_mover)
+        # FIXED ACCURACY MATH: Compare the played move against the best possible move.
+        # wp_before/wp_after now come from the engine's own WDL model (set on
+        # best_line/after_info above) rather than the hardcoded cp sigmoid, so
+        # accuracy stays correctly calibrated regardless of Stockfish version.
+        wp_before = best_line.get("win_pct")
+        if wp_before is None:
+            wp_before = cp_to_winpct(best_cp_mover)
         raw_acc = move_accuracy_pct(wp_before, wp_after)
 
         # Criticality weight: moves near a 50% win probability are the most
@@ -597,13 +553,6 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             rms_accuracy = 100.0 - rms_deficiency
             accuracy[color] = round(max(0.0, min(100.0, rms_accuracy)), 1)
 
-    # Keep only the highest-priority puzzles from this game so one messy
-    # game doesn't dump a dozen near-duplicate puzzles into Personal
-    # Practice -- sort by priority (missed mates and 2-3 move solutions
-    # rank highest) and keep just the top MAX_PUZZLES_PER_GAME.
-    if MAX_PUZZLES_PER_GAME and len(puzzles_out) > MAX_PUZZLES_PER_GAME:
-        puzzles_out = sorted(puzzles_out, key=lambda p: p["priority"], reverse=True)[:MAX_PUZZLES_PER_GAME]
-
     return moves_out, accuracy, mate_stats, puzzles_out
 
 # ============================================================
@@ -666,6 +615,20 @@ def sync_account(engine, chesscom_username, firebase_key):
     already_synced = existing_game_ids(firebase_key)
     print(f"{len(already_synced)} games already in Firebase for {firebase_key}.")
 
+    if REANALYZE_MONTHS > 0:
+        # Manual one-off mode: re-run analysis on the last N months of games
+        # and overwrite whatever's already in Firebase for them (used after
+        # fixing the accuracy formula, classification thresholds, etc. --
+        # this does NOT touch games older than REANALYZE_MONTHS).
+        print(f"REANALYZE_MONTHS={REANALYZE_MONTHS} set -- re-analyzing the last "
+              f"{REANALYZE_MONTHS} month(s) of games regardless of what's already synced.")
+        raw_games = fetch_chesscom_pgns(chesscom_username, REANALYZE_MONTHS)
+        new_games = [(game_id_from_url(gid), pgn, tc) for gid, pgn, _end, tc in raw_games]
+        new_games = new_games[-REANALYZE_MAX_GAMES_PER_RUN:] if REANALYZE_MAX_GAMES_PER_RUN else new_games
+        print(f"Re-analyzing {len(new_games)} game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
+        _process_games(engine, new_games, firebase_key)
+        return
+
     is_new_account = not already_synced
 
     if is_new_account:
@@ -693,8 +656,13 @@ def sync_account(engine, chesscom_username, firebase_key):
         return
 
     print(f"Analyzing {len(new_games)} game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
+    _process_games(engine, new_games, firebase_key)
 
-    for gid, pgn_text, api_time_class in new_games:
+
+def _process_games(engine, games, firebase_key):
+    """Shared per-game analyze/upload loop for both normal incremental sync
+    and REANALYZE_MONTHS re-processing. `games` is [(gid, pgn_text, time_class), ...]."""
+    for gid, pgn_text, api_time_class in games:
         pgn_game = chess.pgn.read_game(io.StringIO(pgn_text))
         if pgn_game is None:
             continue
@@ -753,12 +721,22 @@ def main():
     init_firebase()
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
     try:
+        # Ask the engine for its own calibrated win/draw/loss estimate instead
+        # of relying on a cp->win% sigmoid tuned for an older engine version.
+        # Stockfish's internal cp normalization shifts between major versions
+        # (e.g. SF18 -> SF19), which silently breaks any hardcoded formula;
+        # native WDL tracks whatever the currently-running binary means by
+        # its own cp numbers, so this stays correct across future upgrades.
+        try:
+            engine.configure({"UCI_ShowWDL": True})
+        except chess.engine.EngineError:
+            print("Warning: engine doesn't support UCI_ShowWDL; "
+                  "falling back to cp-based win% (version-sensitive).")
         for chesscom_username, firebase_key in ACCOUNTS:
             sync_account(engine, chesscom_username, firebase_key)
     finally:
         engine.quit()
 
-    print_timing_summary()
     print("\nDone.")
 
 
