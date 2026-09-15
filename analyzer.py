@@ -67,6 +67,8 @@ Optional repo secrets / vars:
                                 account is a normal incremental sync.
     MATE_PUZZLE_MAX_PLIES      how many plies of a mating line to store in a puzzle's
                                 solution (default 8)
+    MAX_PUZZLES_PER_GAME       cap on how many puzzles a single game can generate,
+                                keeping only the highest-priority ones (default 2)
 """
 
 import hashlib
@@ -138,6 +140,10 @@ MAX_GAMES_PER_RUN = int(os.environ.get("MAX_GAMES_PER_RUN", "20"))
 INITIAL_BACKFILL_MONTHS = int(os.environ.get("INITIAL_BACKFILL_MONTHS", "1"))
 # How many plies of a mating (or best) line to keep as a puzzle's solution.
 MATE_PUZZLE_MAX_PLIES = int(os.environ.get("MATE_PUZZLE_MAX_PLIES", "8"))
+# Cap on puzzles generated per game -- games with many misses only keep their
+# highest-priority (most instructive) puzzles, so one bad game doesn't flood
+# Personal Practice with near-duplicate puzzles.
+MAX_PUZZLES_PER_GAME = int(os.environ.get("MAX_PUZZLES_PER_GAME", "2"))
 MATE_SCORE_CP = 10000  # how mate scores are encoded for the app's eval bar
 
 # Classification thresholds, in centipawn loss (how much worse the played
@@ -571,6 +577,13 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             rms_deficiency = math.sqrt(numerator / denominator)
             rms_accuracy = 100.0 - rms_deficiency
             accuracy[color] = round(max(0.0, min(100.0, rms_accuracy)), 1)
+
+    # Keep only the highest-priority puzzles from this game so one messy
+    # game doesn't dump a dozen near-duplicate puzzles into Personal
+    # Practice -- sort by priority (missed mates and 2-3 move solutions
+    # rank highest) and keep just the top MAX_PUZZLES_PER_GAME.
+    if MAX_PUZZLES_PER_GAME and len(puzzles_out) > MAX_PUZZLES_PER_GAME:
+        puzzles_out = sorted(puzzles_out, key=lambda p: p["priority"], reverse=True)[:MAX_PUZZLES_PER_GAME]
 
     return moves_out, accuracy, mate_stats, puzzles_out
 
