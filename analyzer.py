@@ -3,7 +3,7 @@
 analyzer.py
 -----------
 Runs unattended in GitHub Actions (see .github/workflows/sync.yml), every
-15 minutes (queued via workflow concurrency so overlapping runs don't
+30 minutes (queued via workflow concurrency so overlapping runs don't
 clobber each other): pulls your newest chess.com games, analyzes them with
 Stockfish 19, classifies every move, and writes the result straight to Firebase using the
 firebase-admin SDK and the service-account secret already configured in the
@@ -76,6 +76,7 @@ import math
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 import chess
@@ -151,6 +152,53 @@ BOOK_MAX_LOSS = 20
 # Classifications that count as an actual miss worth turning into a puzzle
 # and worth tracking as a repeated mistake pattern.
 PUZZLE_CLASSES = {"Blunder", "Mistake", "Miss"}
+
+# ============================================================
+# TIMING DIAGNOSTICS — tracks whether ANALYSIS_DEPTH or
+# ANALYSIS_TIME_LIMIT is the one actually ending each position's
+# search, so we can tell from the Actions logs whether the time cap
+# is the real bottleneck (as opposed to depth finishing first).
+# ============================================================
+_TIMING_STATS = {
+    "count": 0,
+    "total_time": 0.0,
+    "depths": [],       # depth actually reached per position
+    "time_capped": 0,   # positions that hit ANALYSIS_TIME_LIMIT before finishing the target depth
+}
+
+
+def _record_timing(elapsed, depth_reached, target_depth, time_limit):
+    _TIMING_STATS["count"] += 1
+    _TIMING_STATS["total_time"] += elapsed
+    if depth_reached is not None:
+        _TIMING_STATS["depths"].append(depth_reached)
+    # Consider it time-capped if it stopped noticeably short of the target
+    # depth AND ran close to the full time budget (within 0.5s) -- a solid
+    # signal the time limit, not depth, ended the search.
+    if time_limit and elapsed >= (time_limit - 0.5):
+        if depth_reached is None or depth_reached < target_depth:
+            _TIMING_STATS["time_capped"] += 1
+
+
+def print_timing_summary():
+    n = _TIMING_STATS["count"]
+    if n == 0:
+        print("\n[timing] No positions analyzed -- nothing to report.")
+        return
+    avg_time = _TIMING_STATS["total_time"] / n
+    depths = _TIMING_STATS["depths"]
+    avg_depth = sum(depths) / len(depths) if depths else 0
+    min_depth = min(depths) if depths else 0
+    max_depth = max(depths) if depths else 0
+    capped = _TIMING_STATS["time_capped"]
+    capped_pct = 100.0 * capped / n
+    print(
+        f"\n[timing] {n} positions analyzed | "
+        f"avg {avg_time:.2f}s/position | "
+        f"depth reached: avg {avg_depth:.1f}, min {min_depth}, max {max_depth} "
+        f"(target {ANALYSIS_DEPTH}) | "
+        f"time-limit hit before target depth: {capped}/{n} ({capped_pct:.0f}%)"
+    )
 
 
 # ============================================================
@@ -242,9 +290,13 @@ def analyze_position(engine, board, depth, multipv=2, time_limit=None):
     (in moves, positive = mover delivers it) when the line is a forced mate,
     else None. pv is the raw list of engine Move objects for that line."""
     limit = chess.engine.Limit(depth=depth, time=time_limit) if time_limit else chess.engine.Limit(depth=depth)
+    start = time.time()
     info = engine.analyse(board, limit, multipv=multipv)
+    elapsed = time.time() - start
     if isinstance(info, dict):
         info = [info]
+    depth_reached = max((entry.get("depth", 0) for entry in info), default=None)
+    _record_timing(elapsed, depth_reached, depth, time_limit)
     lines = []
     for entry in info:
         pv = entry.get("pv")
@@ -417,7 +469,10 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
 
         board.push(move)
         after_limit = chess.engine.Limit(depth=depth, time=ANALYSIS_TIME_LIMIT)
-        after_score = engine.analyse(board, after_limit)["score"]
+        _after_start = time.time()
+        after_info = engine.analyse(board, after_limit)
+        _record_timing(time.time() - _after_start, after_info.get("depth"), depth, ANALYSIS_TIME_LIMIT)
+        after_score = after_info["score"]
         played_cp_mover = score_to_cp(after_score, mover_color)
         had_only_good_move = (best_line["cp"] - second_cp) >= GREAT_GAP
 
@@ -671,6 +726,7 @@ def main():
     finally:
         engine.quit()
 
+    print_timing_summary()
     print("\nDone.")
 
 
