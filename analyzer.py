@@ -159,6 +159,15 @@ GREAT_GAP = 150       # 2nd best move must be at least this much worse, in a sha
 BOOK_PLIES = 10        # first N half-moves are eligible to be tagged "Book"
 BOOK_MAX_LOSS = 20
 
+# Bumped whenever the accuracy/classification math changes in a way that
+# makes old stored results stale. Written onto every uploaded game as
+# "accuracy_formula_version" so REANALYZE_MONTHS can tell which games still
+# need re-processing vs. which were already redone with the current formula --
+# this makes it safe to leave REANALYZE_MONTHS set: a second run over the
+# same window just skips games that already match, instead of re-running
+# Stockfish on them again.
+ACCURACY_FORMULA_VERSION = "wdl_v1"  # bump this string next time the formula changes
+
 # Classifications that count as an actual miss worth turning into a puzzle
 # and worth tracking as a repeated mistake pattern.
 PUZZLE_CLASSES = {"Blunder", "Mistake", "Miss"}
@@ -181,6 +190,15 @@ def existing_game_ids(username):
     ref = db.reference(f"users/{username}/games")
     data = ref.get(shallow=True)
     return set(data.keys()) if data else set()
+
+
+def existing_game_versions(username):
+    """Map of game_id -> its stored accuracy_formula_version (or None if it
+    predates version tracking). One query for the whole account -- used by
+    REANALYZE_MONTHS to skip games that already match the current formula."""
+    ref = db.reference(f"users/{username}/games")
+    data = ref.get(shallow=False) or {}
+    return {gid: game.get("accuracy_formula_version") for gid, game in data.items()}
 
 
 def upload_game(username, game_id, game_obj):
@@ -620,13 +638,24 @@ def sync_account(engine, chesscom_username, firebase_key):
         # and overwrite whatever's already in Firebase for them (used after
         # fixing the accuracy formula, classification thresholds, etc. --
         # this does NOT touch games older than REANALYZE_MONTHS).
-        print(f"REANALYZE_MONTHS={REANALYZE_MONTHS} set -- re-analyzing the last "
-              f"{REANALYZE_MONTHS} month(s) of games regardless of what's already synced.")
+        print(f"REANALYZE_MONTHS={REANALYZE_MONTHS} set -- checking the last "
+              f"{REANALYZE_MONTHS} month(s) of games against formula version "
+              f"'{ACCURACY_FORMULA_VERSION}'.")
+        versions = existing_game_versions(firebase_key)
         raw_games = fetch_chesscom_pgns(chesscom_username, REANALYZE_MONTHS)
-        new_games = [(game_id_from_url(gid), pgn, tc) for gid, pgn, _end, tc in raw_games]
+        new_games = []
+        skipped = 0
+        for gid_raw, pgn, _end, tc in raw_games:
+            gid = game_id_from_url(gid_raw)
+            if versions.get(gid) == ACCURACY_FORMULA_VERSION:
+                skipped += 1
+                continue
+            new_games.append((gid, pgn, tc))
         new_games = new_games[-REANALYZE_MAX_GAMES_PER_RUN:] if REANALYZE_MAX_GAMES_PER_RUN else new_games
-        print(f"Re-analyzing {len(new_games)} game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
-        _process_games(engine, new_games, firebase_key)
+        print(f"{skipped} game(s) already on '{ACCURACY_FORMULA_VERSION}', skipped. "
+              f"Re-analyzing {len(new_games)} game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
+        if new_games:
+            _process_games(engine, new_games, firebase_key)
         return
 
     is_new_account = not already_synced
@@ -698,6 +727,7 @@ def _process_games(engine, games, firebase_key):
             "date": date,
             "mate_stats": mate_stats,
             "moves": moves,
+            "accuracy_formula_version": ACCURACY_FORMULA_VERSION,
         }
         upload_game(firebase_key, gid, game_obj)
         for p in puzzles:
