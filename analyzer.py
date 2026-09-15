@@ -168,14 +168,23 @@ PUZZLE_CLASSES = {"Blunder", "Mistake", "Miss"}
 _TIMING_STATS = {
     "count": 0,
     "total_time": 0.0,
-    "depths": [],       # depth actually reached per position
-    "time_capped": 0,   # positions that hit ANALYSIS_TIME_LIMIT before finishing the target depth
+    "depths": [],            # depth reached, for positions that actually searched (excludes terminal/game-over calls)
+    "terminal_count": 0,     # positions with no legal moves (checkmate/stalemate) -- depth 0 by definition, not a real search
+    "time_capped": 0,        # positions that hit ANALYSIS_TIME_LIMIT before finishing the target depth
+    "time_capped_depths": [],  # depth reached specifically for the time-capped positions
 }
 
 
 def _record_timing(elapsed, depth_reached, target_depth, time_limit):
     _TIMING_STATS["count"] += 1
     _TIMING_STATS["total_time"] += elapsed
+    # depth 0 with near-zero elapsed time means the engine had nothing to
+    # search (checkmate/stalemate on the board) -- not a real search, so it
+    # doesn't belong in the depth-reached stats or the time-capped count.
+    is_terminal = (depth_reached == 0 and elapsed < 0.5)
+    if is_terminal:
+        _TIMING_STATS["terminal_count"] += 1
+        return
     if depth_reached is not None:
         _TIMING_STATS["depths"].append(depth_reached)
     # Consider it time-capped if it stopped noticeably short of the target
@@ -184,6 +193,8 @@ def _record_timing(elapsed, depth_reached, target_depth, time_limit):
     if time_limit and elapsed >= (time_limit - 0.5):
         if depth_reached is None or depth_reached < target_depth:
             _TIMING_STATS["time_capped"] += 1
+            if depth_reached is not None:
+                _TIMING_STATS["time_capped_depths"].append(depth_reached)
 
 
 def print_timing_summary():
@@ -198,13 +209,21 @@ def print_timing_summary():
     max_depth = max(depths) if depths else 0
     capped = _TIMING_STATS["time_capped"]
     capped_pct = 100.0 * capped / n
+    terminal = _TIMING_STATS["terminal_count"]
+    capped_depths = _TIMING_STATS["time_capped_depths"]
     print(
-        f"\n[timing] {n} positions analyzed | "
+        f"\n[timing] {n} positions analyzed ({terminal} terminal/no-search skipped) | "
         f"avg {avg_time:.2f}s/position | "
         f"depth reached: avg {avg_depth:.1f}, min {min_depth}, max {max_depth} "
         f"(target {ANALYSIS_DEPTH}) | "
         f"time-limit hit before target depth: {capped}/{n} ({capped_pct:.0f}%)"
     )
+    if capped_depths:
+        print(
+            f"[timing]   -> of those {capped} time-capped positions: "
+            f"depth min {min(capped_depths)}, max {max(capped_depths)}, "
+            f"avg {sum(capped_depths)/len(capped_depths):.1f}"
+        )
 
 
 # ============================================================
