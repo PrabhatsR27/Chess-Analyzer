@@ -25,6 +25,7 @@ jobs:
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL }}
       REANALYZE_MONTHS: ${{ vars.REANALYZE_MONTHS }}
+      REANALYZE_MAX_GAMES_PER_RUN: ${{ vars.REANALYZE_MAX_GAMES_PER_RUN }}
       STOCKFISH_PATH: /usr/local/bin/stockfish
       STOCKFISH_RELEASE: sf_19  # pin the engine version here
       ANALYSIS_DEPTH: 25
