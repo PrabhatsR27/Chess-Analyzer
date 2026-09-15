@@ -111,9 +111,7 @@ jobs:
       - name: Sanity-check Stockfish
         run: |
           "$STOCKFISH_PATH" --help || true
-          echo "uci
-quit" | "$STOCKFISH_PATH" | grep -i "id name" || true
-
+          printf 'uci\nquit\n' | "$STOCKFISH_PATH" | grep -i "id name" || true
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
