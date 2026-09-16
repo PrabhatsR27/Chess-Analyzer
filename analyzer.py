@@ -205,7 +205,7 @@ Optional repo secrets / vars:
                                 MAX_GAMES_PER_RUN like any other run. Every later run for that
                                 account is a normal incremental sync.
     MATE_PUZZLE_MAX_PLIES      how many plies of a mating line to store in a puzzle's
-                                solution (default 8)
+                                solution (default 2)
 """
 
 import hashlib
@@ -311,7 +311,7 @@ REANALYZE_MONTHS = _int_env("REANALYZE_MONTHS", 0)
 # REANALYZE_MONTHS window as recent games get marked done.
 REANALYZE_MAX_GAMES_PER_RUN = _int_env("REANALYZE_MAX_GAMES_PER_RUN", 100)
 # How many plies of a mating (or best) line to keep as a puzzle's solution.
-MATE_PUZZLE_MAX_PLIES = _int_env("MATE_PUZZLE_MAX_PLIES", 8)
+MATE_PUZZLE_MAX_PLIES = _int_env("MATE_PUZZLE_MAX_PLIES", 2)
 MATE_SCORE_CP = 10000  # how mate scores are encoded for the app's eval bar
 
 # Classification thresholds, in centipawn loss (how much worse the played
