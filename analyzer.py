@@ -164,9 +164,12 @@ INITIAL_BACKFILL_MONTHS = _int_env("INITIAL_BACKFILL_MONTHS", 1)
 # games overwrite their existing Firebase entry in place -- puzzles and
 # repeated-mistake counters are similarly overwritten/incremented as usual.
 REANALYZE_MONTHS = _int_env("REANALYZE_MONTHS", 0)
-# How many games a reanalyze run is allowed to touch per account per run --
-# separate from MAX_GAMES_PER_RUN since a multi-month backlog of re-analysis
-# can be much larger than a normal incremental sync batch.
+# The N most recent games (by chess.com end_time) to treat as the reanalyze
+# target set. This is fixed up front from timestamps, not from whatever's
+# left after filtering, so REANALYZE_MAX_GAMES_PER_RUN=20 always means
+# "these exact 20 games" -- however many 15-min runs it takes to get through
+# all of them -- rather than creeping backward through the whole
+# REANALYZE_MONTHS window as recent games get marked done.
 REANALYZE_MAX_GAMES_PER_RUN = _int_env("REANALYZE_MAX_GAMES_PER_RUN", 100)
 # How many plies of a mating (or best) line to keep as a puzzle's solution.
 MATE_PUZZLE_MAX_PLIES = _int_env("MATE_PUZZLE_MAX_PLIES", 8)
@@ -188,7 +191,7 @@ BOOK_MAX_LOSS = 20
 # this makes it safe to leave REANALYZE_MONTHS set: a second run over the
 # same window just skips games that already match, instead of re-running
 # Stockfish on them again.
-ACCURACY_FORMULA_VERSION = "wdl_v2"  # bumped: switched aggregate accuracy from RMS-of-deficiency to a plain weighted mean
+ACCURACY_FORMULA_VERSION = "wdl_v3"  # bumped: blended weighted mean + weighted harmonic mean, matching chess.com/Lichess
 
 # Classifications that count as an actual miss worth turning into a puzzle
 # and worth tracking as a repeated mistake pattern.
@@ -577,16 +580,22 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         if not vals or not sum(wts):
             accuracy[color] = None
         else:
-            # Standard weighted arithmetic mean of per-move accuracy -- this
-            # is what chess.com/Lichess actually use. An earlier version of
-            # this took the weighted RMS of each move's *deficiency*
-            # (100 - accuracy) instead: squaring the deficiency before
-            # averaging made blunders dominate far more than a plain mean
-            # would (RMS >= arithmetic mean, QM-AM inequality), which is why
-            # scores here were reading noticeably lower than chess.com's own
-            # displayed accuracy on any game with even one or two big misses.
+            # chess.com/Lichess blend the weighted arithmetic mean AND the
+            # weighted harmonic mean of per-move accuracy, then average the
+            # two. A plain arithmetic mean alone (the previous version of
+            # this) reads too high: a single bad blunder buried among many
+            # 95%+ moves barely dents an arithmetic mean, so it doesn't
+            # penalize occasional big mistakes enough. The harmonic mean is
+            # pulled down hard by any low value, which is exactly the
+            # correction a plain mean is missing -- blending the two lands
+            # close to what chess.com displays without over-punishing
+            # (like the RMS-of-deficiency version before it) or
+            # under-punishing (like the plain mean after that).
             weighted_mean = sum(w * v for w, v in zip(wts, vals)) / sum(wts)
-            accuracy[color] = round(max(0.0, min(100.0, weighted_mean)), 1)
+            safe_vals = [max(v, 1e-6) for v in vals]  # guard div-by-zero on a 0%-accuracy move
+            weighted_harmonic = sum(wts) / sum(w / v for w, v in zip(wts, safe_vals))
+            blended = (weighted_mean + weighted_harmonic) / 2.0
+            accuracy[color] = round(max(0.0, min(100.0, blended)), 1)
 
     return moves_out, accuracy, mate_stats, puzzles_out
 
@@ -660,16 +669,26 @@ def sync_account(engine, chesscom_username, firebase_key):
               f"'{ACCURACY_FORMULA_VERSION}'.")
         versions = existing_game_versions(firebase_key)
         raw_games = fetch_chesscom_pgns(chesscom_username, REANALYZE_MONTHS)
+        # Fix the target set BEFORE filtering by version: sort by end_time and
+        # take the N most recent games. This target set is the same every run
+        # (it's derived from chess.com's own timestamps, not from what's left
+        # after filtering), so REANALYZE_MAX_GAMES_PER_RUN=20 always means
+        # "these exact 20 games", however many runs it takes to finish them --
+        # filtering first (the old order) let the window silently creep
+        # backward through the whole month as recent games got marked done.
+        raw_games_sorted = sorted(raw_games, key=lambda g: g[2], reverse=True)  # g[2] = end_time
+        target_games = (raw_games_sorted[:REANALYZE_MAX_GAMES_PER_RUN]
+                         if REANALYZE_MAX_GAMES_PER_RUN else raw_games_sorted)
         new_games = []
         skipped = 0
-        for gid_raw, pgn, _end, tc in raw_games:
+        for gid_raw, pgn, _end, tc in target_games:
             gid = game_id_from_url(gid_raw)
             if versions.get(gid) == ACCURACY_FORMULA_VERSION:
                 skipped += 1
                 continue
             new_games.append((gid, pgn, tc))
-        new_games = new_games[-REANALYZE_MAX_GAMES_PER_RUN:] if REANALYZE_MAX_GAMES_PER_RUN else new_games
-        print(f"{skipped} game(s) already on '{ACCURACY_FORMULA_VERSION}', skipped. "
+        print(f"Target set: {len(target_games)} most recent game(s) in the window. "
+              f"{skipped} already on '{ACCURACY_FORMULA_VERSION}', skipped. "
               f"Re-analyzing {len(new_games)} game(s) with Stockfish at depth {ANALYSIS_DEPTH}...")
         if new_games:
             _process_games(engine, new_games, firebase_key)
