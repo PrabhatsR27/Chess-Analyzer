@@ -1,13 +1,66 @@
 #!/usr/bin/env python3
 """
-analyzer.py
------------
+analyzer.py  (v4)
+------------------
+CHANGE LOG FROM v3 -- READ BEFORE TRUSTING THE NUMBERS BELOW
+==============================================================
+v4 contains exactly two fixes, both already applied to v3 earlier in
+development and carried forward here unchanged. Neither has been verified
+yet against a real re-run -- "v4" means "the two fixes applied," not
+"confirmed closer to chess.com." Verify before relying on it:
+
+  1. Move classification (classify_move): the "was this position already
+     decided before I moved" check now receives the eval carried over from
+     the END of the previous ply (re-signed for whichever color is about
+     to move), tracked in the new `eval_entering_ply` loop variable --
+     instead of reusing this ply's own best-response eval, which made the
+     already-decided-position guard check the wrong thing.
+
+  2. Aggregate accuracy (the per-color loop after the main ply loop): now
+     a weighted arithmetic mean of per-move accuracy only. Previously
+     blended in a weighted harmonic mean on the theory that a plain mean
+     under-punishes occasional blunders -- but the harmonic mean is
+     dominated by its smallest inputs far more aggressively than that
+     reasoning accounted for, and was likely a major contributor to
+     accuracy scores reading 15-40 points below chess.com's on games with
+     even a couple of real blunders.
+
+NEITHER FIX HAS BEEN CONFIRMED AGAINST A RE-ANALYZED GAME YET. Before
+treating v4's output as more correct than v3's, re-run this on a game
+you already have both a v3 Firebase record AND a chess.com Game Review
+screenshot for (e.g. the minhfischer or S-rogan games), and compare the
+new white_accuracy / black_accuracy and Blunder/Mistake/Miss counts
+against both. If the gap hasn't closed, the next candidate (not yet
+applied, not yet even fully diagnosed) is a conceptual mismatch in what
+wp_before is computed from -- see the open question below.
+
+STILL OPEN, NOT FIXED IN v4:
+  - wp_before is currently `best_line.get("win_pct")` -- the win% of the
+    position AFTER the engine's own best move is hypothetically played,
+    not the win% of the position the mover is actually standing in before
+    they move. In most positions these are close enough not to matter,
+    but in sharp positions they can diverge, and it's conceptually the
+    wrong quantity to be diffing against wp_after. Not yet fixed because
+    it hasn't been checked against real per-move data -- the fields that
+    would let you check it (best_cp, wp_before, wp_after, criticality)
+    still aren't written to the output JSON. Add them before touching
+    this one, or you'll be guessing the same way the last fix's diagnosis
+    had to before the JSON exports made it checkable.
+==============================================================
+
 Runs unattended in GitHub Actions (see .github/workflows/sync.yml), every
 15 minutes (queued via workflow concurrency so overlapping runs don't
 clobber each other): pulls your newest chess.com games, analyzes them with
 Stockfish 19, classifies every move, and writes the result straight to Firebase using the
 firebase-admin SDK and the service-account secret already configured in the
-repo. Nothing to run by hand.
+repo. Nothing to run by hand -- once this file is committed and pushed, the
+next scheduled run (within 15 minutes) picks it up automatically. It only
+re-analyzes NEW games pulled from chess.com since the last sync, though --
+it will not retroactively re-score games already sitting in Firebase from
+a v3 run. To compare v3 vs v4 on the *same* game, you need either a way to
+force a specific past game through analyze_game() again, or a fresh game
+played after v4 is live, matched against that same game's chess.com Game
+Review screenshot.
 
 Firebase schema written (matches what the Endgame app reads):
 
@@ -533,10 +586,15 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         if clk is not None:
             prev_clock[mover_color] = clk
 
-        # FIXED ACCURACY MATH: Compare the played move against the best possible move.
-        # wp_before/wp_after now come from the engine's own WDL model (set on
+        # wp_before/wp_after come from the engine's own WDL model (set on
         # best_line/after_info above) rather than the hardcoded cp sigmoid, so
         # accuracy stays correctly calibrated regardless of Stockfish version.
+        # NOTE (still open, see module docstring "STILL OPEN" section): wp_before
+        # is the win% of the position that would result if the engine's own best
+        # move were played -- not the win% of the position the mover is actually
+        # standing in before moving. Usually close enough to not matter, but it's
+        # the wrong quantity in principle, and hasn't been checked against real
+        # per-move data yet because that data isn't in the output JSON below.
         wp_before = best_line.get("win_pct")
         if wp_before is None:
             wp_before = cp_to_winpct(best_cp_mover)
@@ -592,22 +650,21 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         if not vals or not sum(wts):
             accuracy[color] = None
         else:
-            # chess.com/Lichess blend the weighted arithmetic mean AND the
-            # weighted harmonic mean of per-move accuracy, then average the
-            # two. A plain arithmetic mean alone (the previous version of
-            # this) reads too high: a single bad blunder buried among many
-            # 95%+ moves barely dents an arithmetic mean, so it doesn't
-            # penalize occasional big mistakes enough. The harmonic mean is
-            # pulled down hard by any low value, which is exactly the
-            # correction a plain mean is missing -- blending the two lands
-            # close to what chess.com displays without over-punishing
-            # (like the RMS-of-deficiency version before it) or
-            # under-punishing (like the plain mean after that).
+            # chess.com computes accuracy as a weighted arithmetic mean of
+            # per-move accuracy (their published methodology). An earlier
+            # version of this blended in a weighted harmonic mean on the
+            # theory that a plain mean under-punishes occasional blunders --
+            # but the harmonic mean is dominated by its smallest inputs much
+            # more aggressively than that reasoning accounts for: even one
+            # or two very-low-accuracy moves among many 90%+ moves can pull
+            # a blended score down 15-20+ points versus the arithmetic mean
+            # alone, well past what chess.com actually reports for the same
+            # game. The criticality weighting already down-weights
+            # already-decided positions and up-weights close ones, which is
+            # where chess.com's own blunder-sensitivity comes from -- no
+            # second mean is needed on top of that.
             weighted_mean = sum(w * v for w, v in zip(wts, vals)) / sum(wts)
-            safe_vals = [max(v, 1e-6) for v in vals]  # guard div-by-zero on a 0%-accuracy move
-            weighted_harmonic = sum(wts) / sum(w / v for w, v in zip(wts, safe_vals))
-            blended = (weighted_mean + weighted_harmonic) / 2.0
-            accuracy[color] = round(max(0.0, min(100.0, blended)), 1)
+            accuracy[color] = round(max(0.0, min(100.0, weighted_mean)), 1)
 
     return moves_out, accuracy, mate_stats, puzzles_out
 
