@@ -457,6 +457,9 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
     mate_stats = {"found": {f"in{n}": 0 for n in range(1, 6)},
                   "missed": {f"in{n}": 0 for n in range(1, 6)}}
     prev_clock = {chess.WHITE: None, chess.BLACK: None}
+    # Eval carried from the end of the previous ply, re-signed for whichever
+    # color is about to move. None until the first move has been played.
+    eval_entering_ply = None
     winpct_acc = {chess.WHITE: [], chess.BLACK: []}
     weights = {chess.WHITE: [], chess.BLACK: []}
 
@@ -496,6 +499,10 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         wp_after = win_pct_from_info(after_info, mover_color, played_cp_mover)
         had_only_good_move = (best_line["cp"] - second_cp) >= GREAT_GAP
 
+        # On the first ply there's no previous ply to inherit from, so fall
+        # back to this move's own best_cp (a neutral eval at move 1 anyway).
+        prior_eval = eval_entering_ply if eval_entering_ply is not None else best_cp_mover
+
         classification = classify_move(
             played_cp=played_cp_mover,
             best_cp=best_cp_mover,
@@ -503,13 +510,18 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             is_best=is_best,
             had_only_good_move=had_only_good_move,
             sacrifice=sac,
-            prior_eval_for_mover=best_cp_mover, # FIXED: passing the correct prior eval
+            prior_eval_for_mover=prior_eval,
         )
         if missed_mate_in is not None and missed_mate_in <= 5:
             classification = f"Missed Mate in {missed_mate_in}"
             mate_stats["missed"][f"in{missed_mate_in}"] += 1
         if delivered_mate_in is not None and delivered_mate_in <= 5:
             mate_stats["found"][f"in{delivered_mate_in}"] += 1
+
+        # Flip to the opponent's perspective: this ply's outcome becomes
+        # their "prior eval entering the ply" when classify_move runs on
+        # their move next iteration.
+        eval_entering_ply = -played_cp_mover
 
         # eval_cp stored from WHITE's perspective for a consistent eval bar
         eval_cp_white = played_cp_mover if mover_color == chess.WHITE else -played_cp_mover
