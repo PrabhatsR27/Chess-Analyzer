@@ -18,7 +18,7 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
 
     env:
       CHESSCOM_ACCOUNTS: ${{ secrets.CHESSCOM_ACCOUNTS }}
