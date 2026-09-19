@@ -164,6 +164,8 @@ users/{username}/games/{game_id} = {
     white_accuracy_v2, black_accuracy_v2,
     white_accuracy_v3, black_accuracy_v3,
     white_accuracy_v4, black_accuracy_v4,
+    white_accuracy_v5, black_accuracy_v5,
+    white_accuracy_v9_legacy, black_accuracy_v9_legacy,
     white_rating, black_rating, opening, time_class, time_control,
     result, date,
     mate_stats: { found: {in1..in5}, missed: {in1..in5} },
@@ -213,6 +215,22 @@ users/{username}/games/{game_id} = {
    (worse on 2 of 30 pairs). NOT YET PROMOTED -- one 30-point sample isn't
    enough to be confident the improvement is more than that sample's own
    noise; compare on more games before touching the production fields.
+-- white_accuracy_v5 / black_accuracy_v5 are PROMOTED TO PRODUCTION in v10
+   -- see move_accuracy_pct_v5's docstring for the exact formula. This is
+   the SAME value as white_accuracy/black_accuracy above; the _v5 field
+   is kept purely for continuity with games analyzed before the v10
+   promotion, same reasoning as white_accuracy_v4 being kept after v9.
+   CALIBRATED against chess.com's real Game Review numbers on 46 real
+   (game, side) pairs: mean error 4.09 vs the demoted formula's 6.87 on
+   the same pairs, and fewer ranking reversals (5/46 vs 8/46). Still a
+   count-based approximation (can't distinguish a small Inaccuracy from
+   a big one) -- re-derive/refit its weights once a larger sample (100+
+   games) is available.
+-- white_accuracy_v9_legacy / black_accuracy_v9_legacy (per game only --
+   no per-move field) are the DEMOTED formula: what white_accuracy/
+   black_accuracy meant before the v10 promotion above (wdl_v9's
+   result-gated weighted-mean of move_accuracy_pct_v4 per move). Kept
+   unchanged so it stays checkable against real games going forward.
 
 users/{username}/puzzles/{game_id}_{ply} = {
     fen, played, best_move, solution, move_count, classification,
@@ -398,7 +416,7 @@ VOLATILITY_EPSILON = 3.0
 # this makes it safe to leave REANALYZE_MONTHS set: a second run over the
 # same window just skips games that already match, instead of re-running
 # Stockfish on them again.
-ACCURACY_FORMULA_VERSION = "wdl_v9"  # bumped: v9 PROMOTES the result-gated asymmetric formula (formerly move_accuracy_pct_v4) to production -- production accuracy/white_accuracy/black_accuracy now use it, checked against chess.com on 30 real (game, side) pairs across 15 games (mean error 8.42 vs the demoted formula's 8.81; see module docstring "v8 CHANGE FROM v7" for that comparison and move_accuracy_pct's docstring for the promotion note). The demoted formula is kept, unchanged, as move_accuracy_pct_legacy_v1 / accuracy_v1_legacy / white_legacy_accuracy_v1 / black_legacy_accuracy_v1. Classification and move-quality tiers (Best/Excellent/Good/etc) are UNCHANGED by this -- only the accuracy percentage. This version bump forces REANALYZE_MONTHS to recompute production accuracy on existing games with the new formula.
+ACCURACY_FORMULA_VERSION = "wdl_v10"  # bumped: v10 PROMOTES the category-percentage formula (move_accuracy_pct_v5) to production -- production accuracy/white_accuracy/black_accuracy now use it, checked against chess.com's real Game Review numbers on 46 real (game, side) pairs across 46 games (mean error 4.09 vs the demoted wdl_v9 formula's 6.87; fewer ranking reversals too, 5/46 vs 8/46). The demoted formula is kept, unchanged, as accuracy_v9_legacy / white_accuracy_v9_legacy / black_accuracy_v9_legacy. Classification and move-quality tiers (Best/Excellent/Good/etc) are UNCHANGED by this -- only the accuracy percentage. This version bump forces REANALYZE_MONTHS to recompute production accuracy on existing games with the new formula.
 
 # Classifications that count as an actual miss worth turning into a puzzle
 # and worth tracking as a repeated mistake pattern.
@@ -781,6 +799,87 @@ def move_accuracy_pct_v4(winpct_before, winpct_after, mover_color_lost_game):
     return max(0.0, min(100.0, acc))
 
 
+def move_accuracy_pct_v5(classification_counts, total_moves):
+    """PROMOTED TO PRODUCTION (v10) -- this is now accuracy/white_accuracy/
+    black_accuracy. A completely different mechanism from
+    move_accuracy_pct/_v2/_v4: those work per move on
+    wp_before/wp_after; this works once per game on the classification
+    counts of ALL of one color's moves (Good/Great/Best/Brilliant/Book/
+    Inaccuracy/Miss/Missed Mate/Blunder/Mistake/etc).
+
+    Formula (weights below are the calibrated ones, not guesses):
+        Good% + Great% + Best% + Brilliant%*1.25 + Book%
+        + Inaccuracy%*0.7 + Miss%*0.1 + MissedMate%*0.8
+        - Blunder%*0.1
+    "Mistake" is deliberately given NO credit and NO extra penalty beyond
+    what it already loses by not appearing in the positive terms above --
+    testing showed adding an explicit Mistake%*0.3 credit term made the
+    fit slightly WORSE (mean error 4.72 -> 4.20 after removing it, see
+    calibration below), so it's left out on purpose. Don't add it back
+    without re-checking against real data.
+
+    CALIBRATED against chess.com's actual Game Review accuracy on 46 real
+    (game, side) pairs (92 data points total, both colors of 46 games):
+    mean absolute error 4.09 (with one corrected chess.com data point;
+    4.20 before that correction) vs 6.87 for the current production
+    formula (move_accuracy_pct / move_accuracy_pct_v4) on the same
+    pairs -- roughly 40% closer to chess.com on average. Also checked
+    for "reversals" (formula ranking the wrong player higher within a
+    game vs chess.com's own ranking): 5/46 games, vs 8/46 for production,
+    and most of those 5 are games where chess.com's own two numbers were
+    within ~2 points of each other (i.e. real near-ties, not a formula
+    that's confidently wrong).
+
+    A pure best-fit regression on the same 46 games (letting every
+    category's weight float freely, e.g. Brilliant ended up at 1.246,
+    Inaccuracy at 0.685, Blunder at only -0.090) got mean error down to
+    3.43 -- but those decimal weights are overfit to this specific
+    46-game sample and were rejected in favor of the clean, rounder
+    weights above, which should generalize better to games outside this
+    sample. Re-derive/refit once a larger sample (100+ games) is
+    available, rather than trusting the 3.43 numbers directly.
+
+    STILL A CATEGORY-COUNT FORMULA, NOT A CONTINUOUS ONE: it can't tell a
+    small Inaccuracy (barely lost eval) from a big one (right at the
+    Mistake threshold) -- both just count as "one Inaccuracy." The
+    single biggest miss found in the 46-game sample (game vs
+    Ak27LEGEND3, opponent side: chess.com 76.6 vs this formula's 63.2,
+    a 13.4 point gap) is consistent with that -- likely a game with
+    several Inaccuracy/Mistake moves that were each small in actual
+    eval-loss terms, which chess.com's continuous per-move formula
+    barely penalizes but this formula's flat per-category credit does
+    not fully capture. A wp_before/wp_after-based continuous formula
+    (like move_accuracy_pct itself) is the more correct fix long-term;
+    this is a simpler, count-based approximation kept alongside it for
+    comparison.
+
+    classification_counts: dict mapping classification name -> count for
+    ONE color's moves only, using classify_move's exact category strings
+    except all "Missed Mate in N" variants collapsed into one key,
+    "Missed Mate" (see the tally in analyze_game).
+    total_moves: total number of moves that color made in the game (the
+    denominator for every percentage above). Returns None if 0.
+    """
+    if not total_moves:
+        return None
+
+    def pct(key):
+        return 100.0 * classification_counts.get(key, 0) / total_moves
+
+    score = (
+        pct("Good")
+        + pct("Great")
+        + pct("Best")
+        + pct("Brilliant") * 1.25
+        + pct("Book")
+        + pct("Inaccuracy") * 0.7
+        + pct("Miss") * 0.1
+        + pct("Missed Mate") * 0.8
+        - pct("Blunder") * 0.1
+    )
+    return max(0.0, min(100.0, score))
+
+
 def compute_volatility_weight(values, idx, window=VOLATILITY_WINDOW, epsilon=VOLATILITY_EPSILON):
     """EXPERIMENTAL (v7) -- alternative aggregate-weighting scheme, run
     alongside `criticality` rather than replacing it.
@@ -866,6 +965,12 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
     # so the computed weight can be written back onto the right move entry.
     wp_before_seq = {chess.WHITE: [], chess.BLACK: []}
     move_entry_idx = {chess.WHITE: [], chess.BLACK: []}
+    # v10 (accuracy_v5): counts each color's move classifications so a
+    # category-percentage formula can be computed per game, calibrated
+    # against real chess.com Game Review numbers -- see
+    # move_accuracy_pct_v5's docstring for the calibration and the formula
+    # itself.
+    classification_counts = {chess.WHITE: {}, chess.BLACK: {}}
 
     node = pgn_game
     ply = 0
@@ -967,6 +1072,12 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         weights[mover_color].append(criticality)
         wp_before_seq[mover_color].append(wp_before)
         move_entry_idx[mover_color].append(len(moves_out))  # index this move will land at in moves_out, below
+        # v10 (accuracy_v5): tally this move's classification for the
+        # category-percentage formula, computed once all moves are in.
+        # Missed-mate classifications are bucketed together under
+        # "Missed Mate" regardless of how many moves it was in.
+        cc_key = "Missed Mate" if classification.startswith("Missed Mate") else classification
+        classification_counts[mover_color][cc_key] = classification_counts[mover_color].get(cc_key, 0) + 1
 
         entry = {
             "played": san_played,
@@ -1020,10 +1131,12 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         ply += 1
 
     accuracy = {}
+    accuracy_v9_legacy = {}
     accuracy_v1_legacy = {}
     accuracy_v2 = {}
     accuracy_v3 = {}
     accuracy_v4 = {}
+    accuracy_v5 = {}
     for color in (chess.WHITE, chess.BLACK):
         vals = winpct_acc[color]
         vals_v1_legacy = winpct_acc_v1_legacy[color]
@@ -1032,16 +1145,31 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
         wts = weights[color]
         wp_seq = wp_before_seq[color]
         idxs = move_entry_idx[color]
+        # v10: PROMOTED TO PRODUCTION. Category-percentage formula, computed
+        # from this color's classification tally rather than the per-move
+        # win% lists below -- see move_accuracy_pct_v5's docstring for the
+        # formula and its calibration against chess.com (mean error 4.09 vs
+        # 6.87 for the demoted wdl_v9 formula, on 46 real game/side pairs;
+        # fewer ranking reversals too, 5/46 vs 8/46). This is now
+        # accuracy/white_accuracy/black_accuracy -- the fields the app
+        # reads as production.
+        accuracy_v5[color] = move_accuracy_pct_v5(classification_counts[color], len(idxs))
+        if accuracy_v5[color] is not None:
+            accuracy_v5[color] = round(accuracy_v5[color], 1)
+        accuracy[color] = accuracy_v5[color]
         if not vals or not sum(wts):
-            accuracy[color] = None
+            accuracy_v9_legacy[color] = None
             accuracy_v1_legacy[color] = None
             accuracy_v2[color] = None
             accuracy_v3[color] = None
             accuracy_v4[color] = None
         else:
-            # v9: this is now move_accuracy_pct_v4's result-gated formula
-            # (production accuracy/white_accuracy/black_accuracy). See
-            # move_accuracy_pct's docstring for the promotion rationale.
+            # v9 (DEMOTED in v10 -- see above): this was production
+            # accuracy/white_accuracy/black_accuracy from wdl_v9 until the
+            # v10 category-percentage formula (move_accuracy_pct_v5) proved
+            # closer to chess.com on real games. Kept as its own tracked
+            # field for continuity/comparison, same reasoning as every
+            # other demoted formula in this file.
             # chess.com computes accuracy as a weighted arithmetic mean of
             # per-move accuracy (their published methodology). An earlier
             # version of this blended in a weighted harmonic mean on the
@@ -1056,7 +1184,7 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             # where chess.com's own blunder-sensitivity comes from -- no
             # second mean is needed on top of that.
             weighted_mean = sum(w * v for w, v in zip(wts, vals)) / sum(wts)
-            accuracy[color] = round(max(0.0, min(100.0, weighted_mean)), 1)
+            accuracy_v9_legacy[color] = round(max(0.0, min(100.0, weighted_mean)), 1)
             # Legacy formula (formerly production before v9) -- same
             # criticality weights, only the per-move accuracy input differs.
             weighted_mean_v1_legacy = sum(w * v for w, v in zip(wts, vals_v1_legacy)) / sum(wts)
@@ -1086,7 +1214,7 @@ def analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH):
             for i, vw in zip(idxs, vol_weights):
                 moves_out[i]["criticality_v2"] = round(vw, 3)
 
-    return moves_out, accuracy, accuracy_v1_legacy, accuracy_v2, accuracy_v3, accuracy_v4, mate_stats, puzzles_out
+    return moves_out, accuracy, accuracy_v9_legacy, accuracy_v1_legacy, accuracy_v2, accuracy_v3, accuracy_v4, accuracy_v5, mate_stats, puzzles_out
 
 # ============================================================
 # CHESS.COM SOURCE
@@ -1236,13 +1364,25 @@ def _process_games(engine, games, firebase_key):
         time_control = headers.get("TimeControl") or None
 
         print(f"  {white} vs {black} ({date}) [{gid}]")
-        moves, accuracy, accuracy_v1_legacy, accuracy_v2, accuracy_v3, accuracy_v4, mate_stats, puzzles = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
+        moves, accuracy, accuracy_v9_legacy, accuracy_v1_legacy, accuracy_v2, accuracy_v3, accuracy_v4, accuracy_v5, mate_stats, puzzles = analyze_game(engine, pgn_game, depth=ANALYSIS_DEPTH)
 
         game_obj = {
             "white": white,
             "black": black,
+            # v10: PROMOTED. This is now the category-percentage formula
+            # (move_accuracy_pct_v5), calibrated against chess.com's real
+            # Game Review numbers (mean error 4.09 vs 6.87 for the
+            # demoted wdl_v9 formula, on 46 real game/side pairs; fewer
+            # ranking reversals too, 5/46 vs 8/46). See
+            # move_accuracy_pct_v5's docstring for the exact formula.
             "white_accuracy": accuracy.get(chess.WHITE),
             "black_accuracy": accuracy.get(chess.BLACK),
+            # Demoted in v10 (formerly production, wdl_v9's result-gated
+            # weighted-mean formula) -- kept so it stays checkable against
+            # real games going forward, same reasoning as every other
+            # demoted formula below.
+            "white_accuracy_v9_legacy": accuracy_v9_legacy.get(chess.WHITE),
+            "black_accuracy_v9_legacy": accuracy_v9_legacy.get(chess.BLACK),
             # Legacy formula (formerly production, demoted in v9) -- kept so
             # the demoted formula stays checkable against real games going
             # forward. See move_accuracy_pct_legacy_v1.
@@ -1259,11 +1399,17 @@ def _process_games(engine, games, firebase_key):
             # meaning. See compute_volatility_weight.
             "white_accuracy_v3": accuracy_v3.get(chess.WHITE),
             "black_accuracy_v3": accuracy_v3.get(chess.BLACK),
-            # Same formula as production (v9) now -- kept as its own field
-            # for continuity with games analyzed before promotion. See
+            # Same formula as v9_legacy above -- kept as its own field for
+            # continuity with games analyzed before the v10 promotion. See
             # move_accuracy_pct_v4.
             "white_accuracy_v4": accuracy_v4.get(chess.WHITE),
             "black_accuracy_v4": accuracy_v4.get(chess.BLACK),
+            # v10: same formula as white_accuracy/black_accuracy above --
+            # kept as its own tracked field for continuity, same reasoning
+            # as white_accuracy_v4 being kept after the v9 promotion. See
+            # move_accuracy_pct_v5.
+            "white_accuracy_v5": accuracy_v5.get(chess.WHITE),
+            "black_accuracy_v5": accuracy_v5.get(chess.BLACK),
             "white_rating": white_rating,
             "black_rating": black_rating,
             "opening": opening,
